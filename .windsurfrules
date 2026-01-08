@@ -1,0 +1,1 @@
+1. do not any changes directly in the src/lib/components/ui and src/lib/components/ui-rtl directories instead you should change the scripts/generate-rtl.js file or every things releated to npm run rtl:generate
