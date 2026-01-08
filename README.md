@@ -1,40 +1,42 @@
-# 🎨 Persian Admin Template - shadcn-svelte RTL
+# 🌐 ترجمای (Tarjomai)
 
-> Complete and professional admin template with full RTL support for Persian/Farsi language
+> ابزار ترجمه و مقایسه هوشمند متون - کاملاً مرورگرمحور
 
 [![SvelteKit](https://img.shields.io/badge/SvelteKit-FF3E00?style=flat&logo=svelte&logoColor=white)](https://kit.svelte.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=flat&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![IndexedDB](https://img.shields.io/badge/IndexedDB-Offline_First-green)](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API)
 
 [فارسی](./README.fa.md) | English
 
 ## ✨ Features
 
-- 🎯 **54 RTL Components** - All shadcn-svelte components with full RTL support
-- 📦 **30+ Ready Pages** - Login, Signup, OTP, Dashboard, Sidebar
-- 🔤 **Vazirmatn Persian Font** - From Google Fonts
-- 🔄 **Auto-Updatable** - Update with one command
-- 🎨 **Modern Design** - With Tailwind CSS v4
-- 🌙 **Dark Mode** - Full dark mode support
-- ⚡ **Fast & Optimized** - SSR-ready
-- 🛠️ **Customizable** - Themes and colors
+- 🌐 **Browser-Only** - تمام کد در مرورگر اجرا می‌شود، بدون سرور
+- 🔒 **Privacy First** - هیچ داده‌ای به سرور ارسال نمی‌شود
+- 💾 **Offline-First** - ذخیره‌سازی با IndexedDB
+- 🤖 **Multi-LLM** - اتصال به مدل‌های مختلف از طریق OpenRouter
+- 📊 **Model Comparison** - مقایسه ترجمه چند مدل
+- 📝 **Style Analysis** - تحلیل سبک نگارش با AI
+- 🎯 **Sentence-Aligned** - نمایش جمله‌به‌جمله متن و ترجمه
+- 🎨 **RTL Support** - پشتیبانی کامل از فارسی و راست‌به‌چپ
 
 ## 📦 Contents
 
-### Authentication Pages (15 pages)
+### Main Pages
 
-- **Login Pages** (5 variants): `/login-01` to `/login-05`
-- **Signup Pages** (5 variants): `/signup-01` to `/signup-05`
-- **OTP Pages** (5 variants): `/otp-01` to `/otp-05`
+- **Dashboard** - `/` - لیست پروژه‌ها و ایجاد پروژه جدید
+- **Settings** - `/settings` - تنظیمات OpenRouter و برنامه
+- **New Project** - `/projects/new` - ایجاد پروژه جدید
+- **Workspace** - `/projects/[id]` - فضای کار اصلی ترجمه
 
-### Dashboard & Sidebar (17 pages)
+### Guided Setup Flow
 
-- **Dashboard**: `/dashboard-01` - Complete dashboard with charts and tables
-- **Sidebar Examples**: `/sidebar-01` to `/sidebar-16` - 16 different sidebar layouts
+- **Style Analysis** - `/projects/[id]/analyze` - تحلیل سبک نگارش
+- **Model Comparison** - `/projects/[id]/compare` - مقایسه مدل‌ها
+- **Model Selection** - `/projects/[id]/select-model` - انتخاب مدل نهایی
 
-### Demo
+### Quick Setup
 
-- `/rtl-demo` - Showcase of all 54 RTL components
+- **Quick Setup** - `/projects/[id]/quick-setup` - تنظیم سریع بدون تحلیل AI
 
 ## 🚀 Getting Started
 
@@ -47,8 +49,8 @@
 
 ```bash
 # Clone the project
-git clone <repository-url>
-cd shadcn
+git clone https://github.com/afzali/tarjomai.git
+cd tarjomai
 
 # Install dependencies
 npm install
@@ -111,25 +113,31 @@ npm run rtl:update
 ## 📖 Project Structure
 
 ```
-shadcn/
+tarjomai/
+├── docs/                         # مستندات پروژه
+│   ├── PROJECT.md                # مشخصات فنی
+│   ├── USER-JOURNEY.md           # مسیر کاربر
+│   └── TASKS.md                  # وظایف پروژه
 ├── src/
 │   ├── lib/
 │   │   ├── components/
-│   │   │   ├── ui/           # Original shadcn components
-│   │   │   └── ui-rtl/       # RTL components (generated)
-│   │   ├── rtl-utils.js      # RTL utility functions
-│   │   └── rtl-context.svelte.js
+│   │   │   ├── ui/               # shadcn components (LTR)
+│   │   │   ├── ui-rtl/           # shadcn components (RTL)
+│   │   │   └── tarjomai/         # کامپوننت‌های اختصاصی
+│   │   ├── db/                   # IndexedDB (Dexie)
+│   │   ├── services/             # سرویس‌های داده
+│   │   ├── stores/               # Svelte stores
+│   │   ├── utils/                # ابزارهای کمکی
+│   │   └── prompts/              # پرامپت‌های AI
 │   ├── routes/
-│   │   ├── login-01/         # Login pages
-│   │   ├── signup-01/        # Signup pages
-│   │   ├── otp-01/           # OTP pages
-│   │   ├── dashboard-01/     # Dashboard
-│   │   └── sidebar-01/       # Sidebar examples
-│   └── app.css               # Main styles + font
+│   │   ├── (app)/                # صفحات اصلی
+│   │   │   ├── settings/
+│   │   │   └── projects/
+│   │   └── (archive)/            # صفحات نمونه shadcn
+│   └── app.css
 ├── scripts/
-│   └── generate-rtl-components.js  # RTL generation script
+│   └── generate-rtl.js
 └── static/
-    └── placeholder.svg       # Placeholder image
 ```
 
 ## 🎨 Customization
@@ -216,9 +224,9 @@ MIT License - Same as shadcn-svelte
 
 ## 📞 Support
 
-- 📖 [Full Documentation](./RTL_DOCS.md)
-- 🐛 [Report Issues](https://github.com/...)
-- 💬 [Discussions](https://github.com/...)
+- 📖 [Full Documentation](./docs/PROJECT.md)
+- 🐛 [Report Issues](https://github.com/afzali/tarjomai/issues)
+- 💬 [Discussions](https://github.com/afzali/tarjomai/discussions)
 
 ---
 

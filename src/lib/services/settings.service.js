@@ -1,0 +1,51 @@
+import db from '$lib/db/index.js';
+
+const SETTINGS_ID = 1;
+
+export const settingsService = {
+  async getSettings() {
+    const settings = await db.settings.get(SETTINGS_ID);
+    return settings || this.getDefaultSettings();
+  },
+
+  async saveSettings(settings) {
+    const existing = await db.settings.get(SETTINGS_ID);
+    if (existing) {
+      await db.settings.update(SETTINGS_ID, { ...settings, updatedAt: new Date() });
+    } else {
+      await db.settings.add({ ...settings, id: SETTINGS_ID, createdAt: new Date(), updatedAt: new Date() });
+    }
+    return this.getSettings();
+  },
+
+  async hasApiKey() {
+    const settings = await this.getSettings();
+    return !!settings.openRouterApiKey;
+  },
+
+  async clearAllData() {
+    await db.settings.clear();
+    await db.projects.clear();
+    await db.chapters.clear();
+    await db.translationRules.clear();
+    await db.presets.clear();
+  },
+
+  getDefaultSettings() {
+    return {
+      id: SETTINGS_ID,
+      openRouterApiKey: '',
+      uiLanguage: 'fa',
+      defaultModels: {
+        styleAnalysis: 'anthropic/claude-3.5-sonnet',
+        translation: 'anthropic/claude-3.5-sonnet',
+        scoring: 'anthropic/claude-3.5-sonnet'
+      },
+      defaultSourceLanguage: 'en',
+      defaultTargetLanguage: 'fa',
+      textDirection: 'auto'
+    };
+  }
+};
+
+export default settingsService;

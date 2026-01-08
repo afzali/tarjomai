@@ -50,5 +50,9 @@
 		"vaul-svelte": "^1.0.0-next.7",
 		"vite": "^7.1.7",
 		"zod": "^3.25.76"
+	},
+	"dependencies": {
+		"dexie": "^4.2.1",
+		"marked": "^17.0.1"
 	}
 }
