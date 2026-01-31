@@ -1,7 +1,7 @@
 <script>
 	import BaseInput from '$lib/components/ui/input/input.svelte';
 	
-	let props = $props();
+	let { value = $bindable(), ...restProps } = $props();
 </script>
 
-<BaseInput {...props} />
+<BaseInput bind:value {...restProps} />

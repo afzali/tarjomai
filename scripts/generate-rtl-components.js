@@ -367,6 +367,15 @@ function extractModuleExports(content) {
 	return exports.length > 0 ? exports : null;
 }
 
+// Components that have bindable props that need special handling
+const BINDABLE_COMPONENTS = {
+	'input': { file: 'input.svelte', props: ['value'] },
+	'textarea': { file: 'textarea.svelte', props: ['value'] },
+	'checkbox': { file: 'checkbox.svelte', props: ['checked'] },
+	'switch': { file: 'switch.svelte', props: ['checked'] },
+	'slider': { file: 'slider.svelte', props: ['value'] },
+};
+
 // Generate RTL wrapper for simple components
 function generateSimpleWrapper(componentName, fileName, sourceContent = null) {
 	const importPath = `$lib/components/ui/${componentName}/${fileName}`;
@@ -388,6 +397,23 @@ function generateSimpleWrapper(componentName, fileName, sourceContent = null) {
 
 `;
 		}
+	}
+	
+	// Check if this component has bindable props
+	const bindableConfig = BINDABLE_COMPONENTS[componentName];
+	if (bindableConfig && bindableConfig.file === fileName) {
+		const bindableProps = bindableConfig.props;
+		const propsDeclaration = bindableProps.map(p => `${p} = $bindable()`).join(', ');
+		const bindStatements = bindableProps.map(p => `bind:${p}`).join(' ');
+		
+		return `${moduleScript}<script>
+	import Base${componentVarName} from '${importPath}';
+	
+	let { ${propsDeclaration}, ...restProps } = $props();
+</script>
+
+<Base${componentVarName} ${bindStatements} {...restProps} />
+`;
 	}
 	
 	return `${moduleScript}<script>

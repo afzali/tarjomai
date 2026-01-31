@@ -1,7 +1,7 @@
 <script>
 	import BaseCheckbox from '$lib/components/ui/checkbox/checkbox.svelte';
 	
-	let props = $props();
+	let { checked = $bindable(), ...restProps } = $props();
 </script>
 
-<BaseCheckbox {...props} />
+<BaseCheckbox bind:checked {...restProps} />

@@ -141,14 +141,6 @@ function convertToRtl(classNames) {
 	// Finally, convert marked translate-x - remove the marker
 	result = result.replace(/__RTL_FLIP__/g, '');
 	
-	// Debug log
-	if (original.includes('border-l') || original.includes('translate-x') || original.includes('left-[') || original.includes('right-[')) {
-		console.log('RTL Conversion:');
-		console.log('  Original:', original);
-		console.log('  Result:  ', result);
-		console.log('  Changed: ', original !== result);
-	}
-	
 	return result;
 }
 

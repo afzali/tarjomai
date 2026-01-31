@@ -8,7 +8,7 @@
 	import { Label } from '$lib/components/ui-rtl/label';
 	import { Textarea } from '$lib/components/ui-rtl/textarea';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui-rtl/card';
-	import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '$lib/components/ui-rtl/select';
+	import * as Select from '$lib/components/ui-rtl/select';
 
 	let projectId = $derived($page.params.id);
 	let project = $state(null);
@@ -21,11 +21,36 @@
 	let customRules = $state('');
 
 	const models = [
-		{ id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet' },
-		{ id: 'openai/gpt-4o', name: 'GPT-4o' },
-		{ id: 'google/gemini-pro-1.5', name: 'Gemini Pro 1.5' },
-		{ id: 'meta-llama/llama-3.1-70b-instruct', name: 'Llama 3.1 70B' }
+		{ value: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet' },
+		{ value: 'openai/gpt-4o', label: 'GPT-4o' },
+		{ value: 'google/gemini-pro-1.5', label: 'Gemini Pro 1.5' },
+		{ value: 'meta-llama/llama-3.1-70b-instruct', label: 'Llama 3.1 70B' }
 	];
+
+	const toneItems = [
+		{ value: 'formal', label: 'رسمی' },
+		{ value: 'informal', label: 'غیررسمی' },
+		{ value: 'literary', label: 'ادبی' },
+		{ value: 'scientific', label: 'علمی' },
+		{ value: 'conversational', label: 'محاوره‌ای' }
+	];
+
+	const vocabularyItems = [
+		{ value: 'simple', label: 'ساده' },
+		{ value: 'medium', label: 'متوسط' },
+		{ value: 'advanced', label: 'پیشرفته' }
+	];
+
+	const translationTypeItems = [
+		{ value: 'literal', label: 'تحت‌اللفظی' },
+		{ value: 'balanced', label: 'متعادل' },
+		{ value: 'free', label: 'آزاد' }
+	];
+
+	const modelLabel = $derived(models.find(m => m.value === selectedModel)?.label ?? 'انتخاب مدل');
+	const toneLabel = $derived(toneItems.find(t => t.value === tone)?.label ?? 'انتخاب لحن');
+	const vocabularyLabel = $derived(vocabularyItems.find(v => v.value === vocabularyLevel)?.label ?? 'انتخاب سطح');
+	const translationTypeLabel = $derived(translationTypeItems.find(t => t.value === translationType)?.label ?? 'انتخاب نوع');
 
 	onMount(async () => {
 		const data = await currentProjectStore.load(parseInt(projectId));
@@ -72,16 +97,16 @@
 			<CardTitle>انتخاب مدل</CardTitle>
 		</CardHeader>
 		<CardContent>
-			<Select bind:value={selectedModel}>
-				<SelectTrigger>
-					<SelectValue placeholder="انتخاب مدل" />
-				</SelectTrigger>
-				<SelectContent>
-					{#each models as model}
-						<SelectItem value={model.id}>{model.name}</SelectItem>
+			<Select.Root type="single" bind:value={selectedModel}>
+				<Select.Trigger class="w-full">
+					{modelLabel}
+				</Select.Trigger>
+				<Select.Content>
+					{#each models as model (model.value)}
+						<Select.Item value={model.value} label={model.label}>{model.label}</Select.Item>
 					{/each}
-				</SelectContent>
-			</Select>
+				</Select.Content>
+			</Select.Root>
 		</CardContent>
 	</Card>
 
@@ -92,46 +117,44 @@
 		<CardContent class="space-y-4">
 			<div class="space-y-2">
 				<Label>لحن</Label>
-				<Select bind:value={tone}>
-					<SelectTrigger>
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="formal">رسمی</SelectItem>
-						<SelectItem value="informal">غیررسمی</SelectItem>
-						<SelectItem value="literary">ادبی</SelectItem>
-						<SelectItem value="scientific">علمی</SelectItem>
-						<SelectItem value="conversational">محاوره‌ای</SelectItem>
-					</SelectContent>
-				</Select>
+				<Select.Root type="single" bind:value={tone}>
+					<Select.Trigger class="w-full">
+						{toneLabel}
+					</Select.Trigger>
+					<Select.Content>
+						{#each toneItems as item (item.value)}
+							<Select.Item value={item.value} label={item.label}>{item.label}</Select.Item>
+						{/each}
+					</Select.Content>
+				</Select.Root>
 			</div>
 
 			<div class="space-y-2">
 				<Label>سطح واژگان</Label>
-				<Select bind:value={vocabularyLevel}>
-					<SelectTrigger>
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="simple">ساده</SelectItem>
-						<SelectItem value="medium">متوسط</SelectItem>
-						<SelectItem value="advanced">پیشرفته</SelectItem>
-					</SelectContent>
-				</Select>
+				<Select.Root type="single" bind:value={vocabularyLevel}>
+					<Select.Trigger class="w-full">
+						{vocabularyLabel}
+					</Select.Trigger>
+					<Select.Content>
+						{#each vocabularyItems as item (item.value)}
+							<Select.Item value={item.value} label={item.label}>{item.label}</Select.Item>
+						{/each}
+					</Select.Content>
+				</Select.Root>
 			</div>
 
 			<div class="space-y-2">
 				<Label>نوع ترجمه</Label>
-				<Select bind:value={translationType}>
-					<SelectTrigger>
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="literal">تحت‌اللفظی</SelectItem>
-						<SelectItem value="balanced">متعادل</SelectItem>
-						<SelectItem value="free">آزاد</SelectItem>
-					</SelectContent>
-				</Select>
+				<Select.Root type="single" bind:value={translationType}>
+					<Select.Trigger class="w-full">
+						{translationTypeLabel}
+					</Select.Trigger>
+					<Select.Content>
+						{#each translationTypeItems as item (item.value)}
+							<Select.Item value={item.value} label={item.label}>{item.label}</Select.Item>
+						{/each}
+					</Select.Content>
+				</Select.Root>
 			</div>
 
 			<div class="space-y-2">

@@ -7,7 +7,7 @@
 	import { Label } from '$lib/components/ui-rtl/label';
 	import { Textarea } from '$lib/components/ui-rtl/textarea';
 	import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '$lib/components/ui-rtl/card';
-	import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '$lib/components/ui-rtl/select';
+	import * as Select from '$lib/components/ui-rtl/select';
 
 	let title = $state('');
 	let description = $state('');
@@ -15,6 +15,17 @@
 	let targetLanguage = $state('fa');
 	let setupType = $state('guided');
 	let creating = $state(false);
+
+	const languageItems = [
+		{ value: 'en', label: 'انگلیسی' },
+		{ value: 'fa', label: 'فارسی' },
+		{ value: 'ar', label: 'عربی' },
+		{ value: 'de', label: 'آلمانی' },
+		{ value: 'fr', label: 'فرانسوی' }
+	];
+
+	const sourceLabel = $derived(languageItems.find(l => l.value === sourceLanguage)?.label ?? 'انتخاب زبان');
+	const targetLabel = $derived(languageItems.find(l => l.value === targetLanguage)?.label ?? 'انتخاب زبان');
 
 	async function createProject() {
 		if (!title.trim()) return;
@@ -68,33 +79,33 @@
 			<div class="grid grid-cols-2 gap-4">
 				<div class="space-y-2">
 					<Label>زبان مبدأ</Label>
-					<Select bind:value={sourceLanguage}>
-						<SelectTrigger>
-							<SelectValue />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="en">انگلیسی</SelectItem>
-							<SelectItem value="fa">فارسی</SelectItem>
-							<SelectItem value="ar">عربی</SelectItem>
-							<SelectItem value="de">آلمانی</SelectItem>
-							<SelectItem value="fr">فرانسوی</SelectItem>
-						</SelectContent>
-					</Select>
+					<Select.Root type="single" bind:value={sourceLanguage}>
+						<Select.Trigger class="w-full">
+							{sourceLabel}
+						</Select.Trigger>
+						<Select.Content>
+							{#each languageItems as item (item.value)}
+								<Select.Item value={item.value} label={item.label}>
+									{item.label}
+								</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
 				</div>
 				<div class="space-y-2">
 					<Label>زبان مقصد</Label>
-					<Select bind:value={targetLanguage}>
-						<SelectTrigger>
-							<SelectValue />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="fa">فارسی</SelectItem>
-							<SelectItem value="en">انگلیسی</SelectItem>
-							<SelectItem value="ar">عربی</SelectItem>
-							<SelectItem value="de">آلمانی</SelectItem>
-							<SelectItem value="fr">فرانسوی</SelectItem>
-						</SelectContent>
-					</Select>
+					<Select.Root type="single" bind:value={targetLanguage}>
+						<Select.Trigger class="w-full">
+							{targetLabel}
+						</Select.Trigger>
+						<Select.Content>
+							{#each languageItems as item (item.value)}
+								<Select.Item value={item.value} label={item.label}>
+									{item.label}
+								</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
 				</div>
 			</div>
 		</CardContent>

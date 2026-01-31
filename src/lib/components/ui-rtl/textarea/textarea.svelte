@@ -1,7 +1,7 @@
 <script>
 	import BaseTextarea from '$lib/components/ui/textarea/textarea.svelte';
 	
-	let props = $props();
+	let { value = $bindable(), ...restProps } = $props();
 </script>
 
-<BaseTextarea {...props} />
+<BaseTextarea bind:value {...restProps} />

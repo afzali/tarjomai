@@ -166,6 +166,35 @@ export const openrouterService = {
 
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  },
+
+  async getCredits(apiKey) {
+    try {
+      const response = await fetch(`${OPENROUTER_API_URL}/credits`, {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'HTTP-Referer': window.location.origin,
+          'X-Title': 'Tarjomai'
+        }
+      });
+      
+      if (!response.ok) {
+        if (response.status === 401) {
+          return { success: false, error: 'API Key نامعتبر است' };
+        }
+        return { success: false, error: `خطا: ${response.status}` };
+      }
+      
+      const data = await response.json();
+      return {
+        success: true,
+        totalCredits: data.data?.total_credits || 0,
+        totalUsage: data.data?.total_usage || 0,
+        remaining: (data.data?.total_credits || 0) - (data.data?.total_usage || 0)
+      };
+    } catch (error) {
+      return { success: false, error: 'خطا در دریافت اطلاعات اعتبار' };
+    }
   }
 };
 
