@@ -4,6 +4,7 @@
 	import { onMount } from 'svelte';
 	import { currentProjectStore } from '$lib/stores/currentProject.store.js';
 	import { rulesService } from '$lib/services/rules.service.js';
+	import projectsService from '$lib/services/projects.service.js';
 	import { Button } from '$lib/components/ui-rtl/button';
 	import { Input } from '$lib/components/ui-rtl/input';
 	import { Label } from '$lib/components/ui-rtl/label';
@@ -16,6 +17,25 @@
 	let rules = $state(null);
 	let presets = $state([]);
 	let saving = $state(false);
+	let selectedModel = $state('');
+
+	// Available models for selection
+	const availableModels = [
+		{ id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', provider: 'Anthropic' },
+		{ id: 'anthropic/claude-3-5-haiku', name: 'Claude 3.5 Haiku', provider: 'Anthropic' },
+		{ id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'OpenAI' },
+		{ id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', provider: 'OpenAI' },
+		{ id: 'google/gemini-1.5-pro', name: 'Gemini 1.5 Pro', provider: 'Google' },
+		{ id: 'google/gemini-1.5-flash', name: 'Gemini 1.5 Flash', provider: 'Google' },
+		{ id: 'meta-llama/llama-3.1-70b-instruct', name: 'Llama 3.1 70B', provider: 'Meta' },
+		{ id: 'deepseek/deepseek-chat', name: 'DeepSeek V3', provider: 'DeepSeek' },
+		{ id: 'mistralai/mistral-large-latest', name: 'Mistral Large', provider: 'Mistral' },
+		{ id: 'qwen/qwen-2.5-72b-instruct', name: 'Qwen 2.5 72B', provider: 'Qwen' }
+	];
+
+	const selectedModelLabel = $derived(
+		availableModels.find(m => m.id === selectedModel)?.name ?? 'انتخاب مدل'
+	);
 
 	let tone = $state('formal');
 	let vocabularyLevel = $state('medium');
@@ -69,6 +89,7 @@
 				customRules = rules.customRules?.join('\n') || '';
 				systemPrompt = rules.systemPrompt || '';
 			}
+			selectedModel = data.project?.defaultModel || 'anthropic/claude-3.5-sonnet';
 		}
 		presets = await rulesService.getPresets();
 	});
@@ -84,6 +105,10 @@
 			customRules: customRules.split('\n').filter(r => r.trim()),
 			systemPrompt
 		});
+		// Save selected model to project
+		if (selectedModel && project) {
+			await projectsService.updateProject(project.id, { defaultModel: selectedModel });
+		}
 		saving = false;
 	}
 
@@ -146,6 +171,32 @@
 			تنظیم قوانین و سبک ترجمه برای پروژه
 		</p>
 	</div>
+
+	<!-- Model Selection -->
+	<Card class="mb-6">
+		<CardHeader>
+			<CardTitle>🤖 مدل ترجمه</CardTitle>
+		</CardHeader>
+		<CardContent>
+			<div class="space-y-2">
+				<Label>مدل پیش‌فرض برای ترجمه</Label>
+				<Select.Root type="single" value={selectedModel} onValueChange={(v) => selectedModel = v || 'anthropic/claude-3.5-sonnet'}>
+					<Select.Trigger class="w-full">{selectedModelLabel}</Select.Trigger>
+					<Select.Content>
+						{#each availableModels as model}
+							<Select.Item value={model.id} label={model.name}>
+								<span class="flex items-center gap-2">
+									<span class="text-xs text-muted-foreground">{model.provider}</span>
+									<span>{model.name}</span>
+								</span>
+							</Select.Item>
+						{/each}
+					</Select.Content>
+				</Select.Root>
+				<p class="text-xs text-muted-foreground">این مدل برای ترجمه فصل‌ها استفاده خواهد شد</p>
+			</div>
+		</CardContent>
+	</Card>
 
 	{#if presets.length > 0}
 		<Card class="mb-6">

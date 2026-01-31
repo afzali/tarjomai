@@ -3,8 +3,9 @@
 	import { onMount } from 'svelte';
 	import { currentProjectStore } from '$lib/stores/currentProject.store.js';
 	import projectsService from '$lib/services/projects.service.js';
+	import { settingsStore } from '$lib/stores/settings.store.js';
+	import { openrouterService } from '$lib/services/openrouter.service.js';
 	import { Button } from '$lib/components/ui-rtl/button';
-	import { Textarea } from '$lib/components/ui-rtl/textarea';
 	import { Input } from '$lib/components/ui-rtl/input';
 	import { Label } from '$lib/components/ui-rtl/label';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui-rtl/card';
@@ -12,12 +13,24 @@
 
 	let projectId = $derived($page.params.id);
 	let project = $state(null);
+	let rules = $state(null);
 	let chapters = $state([]);
 	let selectedChapter = $state(null);
 	let loading = $state(true);
 	let translating = $state(false);
+	let translationProgress = $state(0);
 	let showNewChapterModal = $state(false);
 	let newChapterTitle = $state('');
+	let settings = $state(null);
+	
+	// Parsed sentences for sentence-aligned view (split by . or newline)
+	let sourceSentences = $derived(
+		selectedChapter?.sourceText?.split(/(?<=[.!?؟。])\s*|\n+/).filter(s => s.trim()) || []
+	);
+	let translatedSentences = $derived(
+		selectedChapter?.translatedText?.split(/(?<=[.!?؟。])\s*|\n+/).filter(s => s.trim()) || []
+	);
+	let hoveredSentenceIndex = $state(-1);
 
 	// Check if setup is incomplete
 	const isSetupIncomplete = $derived(
@@ -50,11 +63,13 @@
 		const data = await currentProjectStore.load(parseInt(projectId));
 		if (data) {
 			project = data.project;
+			rules = data.rules;
 			chapters = data.chapters;
 			if (chapters.length > 0) {
 				selectedChapter = chapters[0];
 			}
 		}
+		settings = await settingsStore.load();
 		loading = false;
 	});
 
@@ -90,6 +105,91 @@
 			translatedText: selectedChapter.translatedText
 		});
 	}
+
+	// Build translation prompt with rules
+	function buildTranslationPrompt(text) {
+		const sourceLanguage = project?.sourceLanguage || 'en';
+		const targetLanguage = project?.targetLanguage || 'fa';
+		
+		let systemPrompt = `You are a professional translator. Translate the following text from ${sourceLanguage} to ${targetLanguage}.`;
+		
+		if (rules) {
+			if (rules.tone?.length > 0) {
+				systemPrompt += `\nTone: ${rules.tone.join(', ')}`;
+			}
+			if (rules.vocabularyLevel) {
+				systemPrompt += `\nVocabulary level: ${rules.vocabularyLevel}`;
+			}
+			if (rules.translationType) {
+				systemPrompt += `\nTranslation type: ${rules.translationType}`;
+			}
+			if (rules.customRules?.length > 0) {
+				systemPrompt += `\nCustom rules:\n${rules.customRules.map(r => `- ${r}`).join('\n')}`;
+			}
+			if (rules.systemPrompt) {
+				systemPrompt += `\n\nAdditional instructions: ${rules.systemPrompt}`;
+			}
+		}
+		
+		systemPrompt += `\n\nIMPORTANT: Translate paragraph by paragraph. Keep the same paragraph structure. Do not add or remove paragraphs.`;
+		
+		return {
+			system: systemPrompt,
+			user: text
+		};
+	}
+
+	// Translate chapter paragraph by paragraph
+	async function translateChapter() {
+		if (!selectedChapter || !settings?.openRouterApiKey) return;
+		if (!selectedChapter.sourceText?.trim()) return;
+		
+		translating = true;
+		translationProgress = 0;
+		
+		const model = project?.defaultModel || 'anthropic/claude-3.5-sonnet';
+		const paragraphs = selectedChapter.sourceText.split(/\n\n+/).filter(p => p.trim());
+		const translatedParts = [];
+		
+		for (let i = 0; i < paragraphs.length; i++) {
+			const paragraph = paragraphs[i];
+			const prompt = buildTranslationPrompt(paragraph);
+			
+			const result = await openrouterService.sendMessage(
+				settings.openRouterApiKey,
+				model,
+				[
+					{ role: 'system', content: prompt.system },
+					{ role: 'user', content: `Translate this paragraph:\n\n${prompt.user}` }
+				],
+				{ projectId: project?.id }
+			);
+			
+			if (result.success) {
+				translatedParts.push(result.content.trim());
+			} else {
+				translatedParts.push(`[خطا در ترجمه: ${result.error}]`);
+			}
+			
+			translationProgress = Math.round(((i + 1) / paragraphs.length) * 100);
+			
+			// Update UI in real-time
+			selectedChapter.translatedText = translatedParts.join('\n\n');
+		}
+		
+		// Save after translation
+		await saveChapter();
+		translating = false;
+	}
+
+	// Get model display name
+	const modelDisplayName = $derived(() => {
+		const model = project?.defaultModel;
+		if (!model) return 'انتخاب نشده';
+		// Extract model name from ID like "anthropic/claude-3.5-sonnet"
+		const parts = model.split('/');
+		return parts[parts.length - 1] || model;
+	});
 </script>
 
 <div class="flex h-screen">
@@ -161,39 +261,95 @@
 			{/if}
 
 			<div class="p-4 border-b flex items-center justify-between">
-				<h1 class="text-xl font-bold">{project.title}</h1>
-				<div class="flex gap-2">
+				<div class="flex items-center gap-4">
+					<h1 class="text-xl font-bold">{project.title}</h1>
+					<span class="text-xs px-2 py-1 bg-muted rounded font-mono">
+						🤖 {modelDisplayName()}
+					</span>
+				</div>
+				<div class="flex items-center gap-2">
+					{#if translating}
+						<div class="flex items-center gap-2 text-sm text-muted-foreground">
+							<div class="w-32 h-2 bg-muted rounded-full overflow-hidden">
+								<div class="h-full bg-primary transition-all" style="width: {translationProgress}%"></div>
+							</div>
+							<span>{translationProgress}%</span>
+						</div>
+					{/if}
 					<Button variant="outline" onclick={saveChapter}>
 						ذخیره
 					</Button>
-					<Button disabled={translating || !selectedChapter}>
+					<Button onclick={translateChapter} disabled={translating || !selectedChapter || !selectedChapter.sourceText?.trim()}>
 						{translating ? 'در حال ترجمه...' : 'ترجمه این فصل'}
 					</Button>
 				</div>
 			</div>
 
 			{#if selectedChapter}
-				<div class="flex-1 grid grid-cols-2 gap-0">
-					<!-- Source Text -->
-					<div class="border-l p-4 flex flex-col">
-						<h3 class="font-medium mb-2">متن اصلی ({project.sourceLanguage})</h3>
-						<Textarea 
-							bind:value={selectedChapter.sourceText}
-							class="flex-1 resize-none font-mono text-sm"
-							placeholder="متن اصلی را اینجا وارد کنید..."
-							dir="auto"
-						/>
+				<div class="flex-1 grid grid-cols-2 gap-0 overflow-hidden">
+					<!-- Source Text Panel -->
+					<div class="border-l flex flex-col overflow-hidden">
+						<div class="p-3 border-b bg-muted/30">
+							<h3 class="font-medium text-sm">متن اصلی ({project.sourceLanguage})</h3>
+						</div>
+						<div class="flex-1 overflow-auto p-4">
+							<textarea
+								bind:value={selectedChapter.sourceText}
+								class="w-full h-full resize-none border rounded-lg p-3 bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 leading-relaxed hidden"
+								placeholder="متن اصلی را اینجا وارد کنید..."
+								dir="auto"
+							></textarea>
+							<!-- Sentence-aligned view like Google Translate -->
+							<div class="leading-relaxed text-base" dir="auto">
+								{#each sourceSentences as sentence, index}
+									<span 
+										class="inline transition-colors rounded px-0.5 {hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'}"
+										onmouseenter={() => hoveredSentenceIndex = index}
+										onmouseleave={() => hoveredSentenceIndex = -1}
+										role="button"
+										tabindex="0"
+									>{sentence}{index < sourceSentences.length - 1 ? ' ' : ''}</span>
+								{/each}
+								{#if sourceSentences.length === 0}
+									<textarea
+										bind:value={selectedChapter.sourceText}
+										class="w-full min-h-[200px] resize-none border rounded-lg p-3 bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 leading-relaxed"
+										placeholder="متن اصلی را اینجا وارد کنید..."
+										dir="auto"
+									></textarea>
+								{/if}
+							</div>
+						</div>
 					</div>
 
-					<!-- Translated Text -->
-					<div class="p-4 flex flex-col">
-						<h3 class="font-medium mb-2">ترجمه ({project.targetLanguage})</h3>
-						<Textarea 
-							bind:value={selectedChapter.translatedText}
-							class="flex-1 resize-none font-mono text-sm"
-							placeholder="ترجمه اینجا نمایش داده می‌شود..."
-							dir="auto"
-						/>
+					<!-- Translated Text Panel -->
+					<div class="flex flex-col overflow-hidden">
+						<div class="p-3 border-b bg-muted/30">
+							<h3 class="font-medium text-sm">ترجمه ({project.targetLanguage})</h3>
+						</div>
+						<div class="flex-1 overflow-auto p-4">
+							<!-- Sentence-aligned view like Google Translate -->
+							<div class="leading-relaxed text-base" dir="auto">
+								{#each translatedSentences as sentence, index}
+									<span 
+										class="inline transition-colors rounded px-0.5 {hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'}"
+										onmouseenter={() => hoveredSentenceIndex = index}
+										onmouseleave={() => hoveredSentenceIndex = -1}
+										role="button"
+										tabindex="0"
+									>{sentence}{index < translatedSentences.length - 1 ? ' ' : ''}</span>
+								{/each}
+								{#if translatedSentences.length === 0}
+									<div class="h-full flex items-center justify-center text-muted-foreground min-h-[200px]">
+										{#if selectedChapter.sourceText?.trim()}
+											<p>برای شروع ترجمه، دکمه "ترجمه این فصل" را بزنید</p>
+										{:else}
+											<p>ابتدا متن اصلی را وارد کنید</p>
+										{/if}
+									</div>
+								{/if}
+							</div>
+						</div>
 					</div>
 				</div>
 			{:else}
