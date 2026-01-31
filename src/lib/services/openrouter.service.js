@@ -1,3 +1,5 @@
+import { usageService } from './usage.service.js';
+
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
 
 export const openrouterService = {
@@ -88,6 +90,20 @@ export const openrouterService = {
         }
 
         const data = await response.json();
+        
+        // ذخیره مصرف در تاریخچه محلی
+        if (data.usage) {
+          try {
+            await usageService.addUsage({
+              model,
+              usage: data.usage,
+              projectId: options.projectId || null
+            });
+          } catch (e) {
+            // خطای ذخیره مصرف نباید عملکرد اصلی را متوقف کند
+          }
+        }
+        
         return {
           success: true,
           content: data.choices?.[0]?.message?.content || '',
@@ -194,6 +210,41 @@ export const openrouterService = {
       };
     } catch (error) {
       return { success: false, error: 'خطا در دریافت اطلاعات اعتبار' };
+    }
+  },
+
+  async getActivity(apiKey, date = null) {
+    try {
+      let url = `${OPENROUTER_API_URL}/activity`;
+      if (date) {
+        url += `?date=${date}`;
+      }
+      
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'HTTP-Referer': window.location.origin,
+          'X-Title': 'Tarjomai'
+        }
+      });
+      
+      if (!response.ok) {
+        if (response.status === 401) {
+          return { success: false, error: 'API Key نامعتبر است' };
+        }
+        if (response.status === 403) {
+          return { success: false, error: 'این قابلیت فقط با Provisioning Key کار می‌کند. برای دیدن ریز مصرف به داشبورد OpenRouter مراجعه کنید.' };
+        }
+        return { success: false, error: `خطا: ${response.status}` };
+      }
+      
+      const data = await response.json();
+      return {
+        success: true,
+        activity: data.data || []
+      };
+    } catch (error) {
+      return { success: false, error: 'خطا در دریافت تاریخچه مصرف' };
     }
   }
 };

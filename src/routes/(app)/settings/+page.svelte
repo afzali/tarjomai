@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { settingsStore } from '$lib/stores/settings.store.js';
 	import { openrouterService } from '$lib/services/openrouter.service.js';
+	import { usageService } from '$lib/services/usage.service.js';
 	import { Button } from '$lib/components/ui-rtl/button';
 	import { Input } from '$lib/components/ui-rtl/input';
 	import { Label } from '$lib/components/ui-rtl/label';
@@ -18,6 +19,10 @@
 	let saving = $state(false);
 	let credits = $state(null);
 	let loadingCredits = $state(false);
+	let activity = $state(null);
+	let loadingActivity = $state(false);
+	let localUsage = $state(null);
+	let loadingLocalUsage = $state(false);
 
 	const languageItems = [
 		{ value: 'en', label: 'انگلیسی' },
@@ -53,6 +58,35 @@
 		loadingCredits = true;
 		credits = await openrouterService.getCredits(apiKey);
 		loadingCredits = false;
+	}
+
+	async function loadActivity() {
+		if (!apiKey) return;
+		loadingActivity = true;
+		activity = await openrouterService.getActivity(apiKey);
+		loadingActivity = false;
+	}
+
+	async function loadLocalUsage() {
+		loadingLocalUsage = true;
+		try {
+			const [history, byModel, total] = await Promise.all([
+				usageService.getHistory(30),
+				usageService.getUsageByModel(),
+				usageService.getTotalUsage()
+			]);
+			localUsage = { history, byModel, total };
+		} catch (e) {
+			localUsage = { error: 'خطا در دریافت تاریخچه محلی' };
+		}
+		loadingLocalUsage = false;
+	}
+
+	async function clearLocalUsage() {
+		if (confirm('آیا از حذف تاریخچه مصرف محلی مطمئن هستید؟')) {
+			await usageService.clearHistory();
+			localUsage = null;
+		}
 	}
 
 	async function testConnection() {
@@ -145,9 +179,14 @@
 								<p class="text-sm text-muted-foreground">باقی‌مانده</p>
 							</div>
 						</div>
-						<Button variant="outline" class="mt-4" onclick={loadCredits}>
-							به‌روزرسانی
-						</Button>
+						<div class="flex gap-2 mt-4">
+							<Button variant="outline" onclick={loadCredits}>
+								به‌روزرسانی
+							</Button>
+							<Button variant="outline" onclick={loadActivity}>
+								ریز مصرف (30 روز اخیر)
+							</Button>
+						</div>
 					{:else if credits?.error}
 						<p class="text-red-600">{credits.error}</p>
 					{:else}
@@ -157,7 +196,140 @@
 					{/if}
 				</CardContent>
 			</Card>
+
+			{#if loadingActivity}
+				<Card>
+					<CardContent class="py-8">
+						<p class="text-muted-foreground text-center">در حال بارگذاری تاریخچه مصرف...</p>
+					</CardContent>
+				</Card>
+			{:else if activity?.success && activity.activity.length > 0}
+				<Card>
+					<CardHeader>
+						<CardTitle>ریز مصرف (30 روز اخیر)</CardTitle>
+						<CardDescription>تفکیک هزینه به تفکیک مدل و روز</CardDescription>
+					</CardHeader>
+					<CardContent>
+						<div class="overflow-x-auto">
+							<table class="w-full text-sm">
+								<thead>
+									<tr class="border-b">
+										<th class="text-right py-2 px-2">تاریخ</th>
+										<th class="text-right py-2 px-2">مدل</th>
+										<th class="text-right py-2 px-2">تعداد</th>
+										<th class="text-right py-2 px-2">توکن ورودی</th>
+										<th class="text-right py-2 px-2">توکن خروجی</th>
+										<th class="text-right py-2 px-2">هزینه</th>
+									</tr>
+								</thead>
+								<tbody>
+									{#each activity.activity as item}
+										<tr class="border-b hover:bg-muted/50">
+											<td class="py-2 px-2 text-muted-foreground">{item.date}</td>
+											<td class="py-2 px-2 font-mono text-xs">{item.model}</td>
+											<td class="py-2 px-2">{item.requests}</td>
+											<td class="py-2 px-2">{item.prompt_tokens?.toLocaleString() || 0}</td>
+											<td class="py-2 px-2">{item.completion_tokens?.toLocaleString() || 0}</td>
+											<td class="py-2 px-2 font-bold text-red-600">${item.usage?.toFixed(6) || '0'}</td>
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						</div>
+					</CardContent>
+				</Card>
+			{:else if activity?.error}
+				<Card>
+					<CardContent class="py-4">
+						<p class="text-red-600 mb-3">{activity.error}</p>
+						<a 
+							href="https://openrouter.ai/activity" 
+							target="_blank" 
+							rel="noopener noreferrer"
+							class="text-blue-600 hover:underline"
+						>
+							مشاهده در داشبورد OpenRouter ←
+						</a>
+					</CardContent>
+				</Card>
+			{/if}
 		{/if}
+
+		<Card>
+			<CardHeader>
+				<CardTitle>تاریخچه مصرف محلی</CardTitle>
+				<CardDescription>مصرف ذخیره شده در این مرورگر (از درخواست‌های شما)</CardDescription>
+			</CardHeader>
+			<CardContent>
+				{#if loadingLocalUsage}
+					<p class="text-muted-foreground">در حال بارگذاری...</p>
+				{:else if localUsage?.error}
+					<p class="text-red-600">{localUsage.error}</p>
+				{:else if localUsage?.total}
+					<div class="space-y-4">
+						<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+							<div class="p-3 bg-muted rounded-lg">
+								<p class="text-xl font-bold">{localUsage.total.requestCount}</p>
+								<p class="text-xs text-muted-foreground">درخواست</p>
+							</div>
+							<div class="p-3 bg-muted rounded-lg">
+								<p class="text-xl font-bold">{localUsage.total.totalPromptTokens.toLocaleString()}</p>
+								<p class="text-xs text-muted-foreground">توکن ورودی</p>
+							</div>
+							<div class="p-3 bg-muted rounded-lg">
+								<p class="text-xl font-bold">{localUsage.total.totalCompletionTokens.toLocaleString()}</p>
+								<p class="text-xs text-muted-foreground">توکن خروجی</p>
+							</div>
+							<div class="p-3 bg-muted rounded-lg">
+								<p class="text-xl font-bold">{localUsage.total.totalTokens.toLocaleString()}</p>
+								<p class="text-xs text-muted-foreground">کل توکن</p>
+							</div>
+						</div>
+
+						{#if localUsage.byModel?.length > 0}
+							<div>
+								<p class="font-medium mb-2">به تفکیک مدل:</p>
+								<div class="overflow-x-auto">
+									<table class="w-full text-sm">
+										<thead>
+											<tr class="border-b">
+												<th class="text-right py-2 px-2">مدل</th>
+												<th class="text-right py-2 px-2">درخواست</th>
+												<th class="text-right py-2 px-2">توکن ورودی</th>
+												<th class="text-right py-2 px-2">توکن خروجی</th>
+											</tr>
+										</thead>
+										<tbody>
+											{#each localUsage.byModel as item}
+												<tr class="border-b hover:bg-muted/50">
+													<td class="py-2 px-2 font-mono text-xs">{item.model}</td>
+													<td class="py-2 px-2">{item.requests}</td>
+													<td class="py-2 px-2">{item.promptTokens.toLocaleString()}</td>
+													<td class="py-2 px-2">{item.completionTokens.toLocaleString()}</td>
+												</tr>
+											{/each}
+										</tbody>
+									</table>
+								</div>
+							</div>
+						{/if}
+
+						<div class="flex gap-2">
+							<Button variant="outline" onclick={loadLocalUsage}>
+								به‌روزرسانی
+							</Button>
+							<Button variant="destructive" onclick={clearLocalUsage}>
+								پاک کردن تاریخچه
+							</Button>
+						</div>
+					</div>
+				{:else}
+					<Button variant="outline" onclick={loadLocalUsage}>
+						مشاهده تاریخچه محلی
+					</Button>
+				{/if}
+			</CardContent>
+		</Card>
 
 		<Card>
 			<CardHeader>
