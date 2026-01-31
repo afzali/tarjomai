@@ -31,6 +31,14 @@
 		selectedChapter?.translatedText?.split(/(?<=[.!?؟。])\s*|\n+/).filter(s => s.trim()) || []
 	);
 	let hoveredSentenceIndex = $state(-1);
+	let editMode = $state(false);
+	let lastTranslatedSourceText = $state('');
+	let lastSavedSourceText = $state('');
+	let showDeleteChapterModal = $state(false);
+	let chapterToDelete = $state(null);
+	let hasUnsavedChanges = $state(false);
+	let showUnsavedWarning = $state(false);
+	let pendingNavigation = $state(null);
 
 	// Check if setup is incomplete
 	const isSetupIncomplete = $derived(
@@ -67,6 +75,8 @@
 			chapters = data.chapters;
 			if (chapters.length > 0) {
 				selectedChapter = chapters[0];
+				lastSavedSourceText = chapters[0].sourceText || '';
+				lastTranslatedSourceText = chapters[0].sourceText || '';
 			}
 		}
 		settings = await settingsStore.load();
@@ -104,7 +114,83 @@
 			sourceText: selectedChapter.sourceText,
 			translatedText: selectedChapter.translatedText
 		});
+		lastSavedSourceText = selectedChapter.sourceText;
+		hasUnsavedChanges = false;
 	}
+
+	// Track changes to source text
+	$effect(() => {
+		if (selectedChapter && lastSavedSourceText && selectedChapter.sourceText !== lastSavedSourceText) {
+			hasUnsavedChanges = true;
+		}
+	});
+
+	// Warn before leaving page with unsaved changes
+	$effect(() => {
+		if (typeof window !== 'undefined') {
+			const handleBeforeUnload = (e) => {
+				if (hasUnsavedChanges) {
+					e.preventDefault();
+					e.returnValue = '';
+					return '';
+				}
+			};
+			window.addEventListener('beforeunload', handleBeforeUnload);
+			return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+		}
+	});
+
+	async function deleteChapter(chapter) {
+		if (!chapter) return;
+		await currentProjectStore.deleteChapter(chapter.id);
+		if (selectedChapter?.id === chapter.id) {
+			selectedChapter = chapters.length > 0 ? chapters[0] : null;
+		}
+		showDeleteChapterModal = false;
+		chapterToDelete = null;
+	}
+
+	function confirmDeleteChapter(chapter) {
+		chapterToDelete = chapter;
+		showDeleteChapterModal = true;
+	}
+
+	function selectChapter(chapter) {
+		if (hasUnsavedChanges) {
+			pendingNavigation = chapter;
+			showUnsavedWarning = true;
+		} else {
+			doSelectChapter(chapter);
+		}
+	}
+
+	function doSelectChapter(chapter) {
+		selectedChapter = chapter;
+		lastSavedSourceText = chapter.sourceText || '';
+		lastTranslatedSourceText = chapter.sourceText || '';
+		editMode = false;
+		hasUnsavedChanges = false;
+	}
+
+	function confirmLeaveWithoutSaving() {
+		if (pendingNavigation) {
+			doSelectChapter(pendingNavigation);
+		}
+		showUnsavedWarning = false;
+		pendingNavigation = null;
+	}
+
+	function cancelLeave() {
+		showUnsavedWarning = false;
+		pendingNavigation = null;
+	}
+
+	// Check if source text changed after last translation
+	const sourceTextChanged = $derived(
+		selectedChapter?.translatedText?.trim() && 
+		lastTranslatedSourceText && 
+		selectedChapter?.sourceText !== lastTranslatedSourceText
+	);
 
 	// Build translation prompt with rules
 	function buildTranslationPrompt(text) {
@@ -179,6 +265,8 @@
 		
 		// Save after translation
 		await saveChapter();
+		lastTranslatedSourceText = selectedChapter.sourceText;
+		editMode = false;
 		translating = false;
 	}
 
@@ -190,6 +278,70 @@
 		const parts = model.split('/');
 		return parts[parts.length - 1] || model;
 	});
+
+	// Export to Word document
+	let showExportModal = $state(false);
+	let exportIncludeSource = $state(false);
+
+	function exportToWord() {
+		if (!chapters || chapters.length === 0) return;
+
+		let content = '';
+		
+		// Add project title
+		content += `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+		<head><meta charset="utf-8"><title>${project?.title || 'ترجمه'}</title>
+		<style>
+			body { font-family: 'B Nazanin', 'Tahoma', sans-serif; direction: rtl; }
+			h1 { font-size: 24pt; text-align: center; margin-bottom: 20pt; }
+			h2 { font-size: 18pt; margin-top: 20pt; margin-bottom: 10pt; border-bottom: 1px solid #ccc; padding-bottom: 5pt; }
+			h3 { font-size: 14pt; color: #666; margin-top: 15pt; margin-bottom: 5pt; }
+			p { font-size: 12pt; line-height: 1.8; text-align: justify; margin-bottom: 10pt; }
+			.source { background-color: #f5f5f5; padding: 10pt; border-right: 3px solid #ccc; margin-bottom: 15pt; }
+			.translated { padding: 10pt; }
+		</style>
+		</head><body>`;
+		
+		content += `<h1>${project?.title || 'ترجمه'}</h1>`;
+		
+		for (const chapter of chapters) {
+			content += `<h2>${chapter.title}</h2>`;
+			
+			if (exportIncludeSource && chapter.sourceText?.trim()) {
+				content += `<h3>متن اصلی:</h3>`;
+				content += `<div class="source">`;
+				const sourceParagraphs = chapter.sourceText.split(/\n\n+/).filter(p => p.trim());
+				for (const para of sourceParagraphs) {
+					content += `<p>${para}</p>`;
+				}
+				content += `</div>`;
+			}
+			
+			if (chapter.translatedText?.trim()) {
+				if (exportIncludeSource) {
+					content += `<h3>ترجمه:</h3>`;
+				}
+				content += `<div class="translated">`;
+				const translatedParagraphs = chapter.translatedText.split(/\n\n+/).filter(p => p.trim());
+				for (const para of translatedParagraphs) {
+					content += `<p>${para}</p>`;
+				}
+				content += `</div>`;
+			}
+		}
+		
+		content += `</body></html>`;
+		
+		// Create and download file
+		const blob = new Blob([content], { type: 'application/msword' });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = `${project?.title || 'translation'}.doc`;
+		a.click();
+		URL.revokeObjectURL(url);
+		showExportModal = false;
+	}
 </script>
 
 <div class="flex h-screen">
@@ -209,12 +361,21 @@
 				<p class="text-sm text-muted-foreground">هنوز فصلی اضافه نشده</p>
 			{:else}
 				{#each chapters as chapter (chapter.id)}
-					<button
-						class="w-full text-right px-3 py-2 rounded-md text-sm transition-colors {selectedChapter?.id === chapter.id ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}"
-						onclick={() => selectedChapter = chapter}
-					>
-						{chapter.title}
-					</button>
+					<div class="group flex items-center gap-1">
+						<button
+							class="flex-1 text-right px-3 py-2 rounded-md text-sm transition-colors {selectedChapter?.id === chapter.id ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}"
+							onclick={() => selectChapter(chapter)}
+						>
+							{chapter.title}
+						</button>
+						<button
+							class="opacity-0 group-hover:opacity-100 p-1 text-destructive hover:bg-destructive/10 rounded transition-opacity"
+							onclick={() => confirmDeleteChapter(chapter)}
+							title="حذف فصل"
+						>
+							🗑️
+						</button>
+					</div>
 				{/each}
 			{/if}
 		</div>
@@ -276,6 +437,12 @@
 							<span>{translationProgress}%</span>
 						</div>
 					{/if}
+					<Button variant="outline" onclick={() => showExportModal = true} disabled={chapters.length === 0}>
+						📄 خروجی Word
+					</Button>
+					<Button variant="outline" href="/projects/{projectId}/rules">
+						⚙️ قوانین ترجمه
+					</Button>
 					<Button variant="outline" onclick={saveChapter}>
 						ذخیره
 					</Button>
@@ -286,39 +453,58 @@
 			</div>
 
 			{#if selectedChapter}
+				<!-- Warning banner when source text changed -->
+				{#if sourceTextChanged}
+					<div class="p-3 bg-amber-50 dark:bg-amber-950 border-b border-amber-200 dark:border-amber-800 flex items-center gap-3">
+						<span class="text-amber-600">⚠️</span>
+						<p class="text-sm text-amber-700 dark:text-amber-300">متن اصلی تغییر کرده ولی ترجمه به‌روز نیست. برای به‌روزرسانی ترجمه، دکمه "ترجمه این فصل" را بزنید.</p>
+					</div>
+				{/if}
+
 				<div class="flex-1 grid grid-cols-2 gap-0 overflow-hidden">
 					<!-- Source Text Panel -->
 					<div class="border-l flex flex-col overflow-hidden">
-						<div class="p-3 border-b bg-muted/30">
+						<div class="p-3 border-b bg-muted/30 flex items-center justify-between">
 							<h3 class="font-medium text-sm">متن اصلی ({project.sourceLanguage})</h3>
+							{#if !editMode && sourceSentences.length > 0}
+								<button 
+									class="text-xs px-2 py-1 rounded bg-muted hover:bg-muted/80 transition-colors"
+									onclick={() => editMode = true}
+								>
+									✏️ ویرایش
+								</button>
+							{:else if editMode}
+								<button 
+									class="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+									onclick={() => { editMode = false; saveChapter(); }}
+								>
+									✓ تأیید
+								</button>
+							{/if}
 						</div>
 						<div class="flex-1 overflow-auto p-4">
-							<textarea
-								bind:value={selectedChapter.sourceText}
-								class="w-full h-full resize-none border rounded-lg p-3 bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 leading-relaxed hidden"
-								placeholder="متن اصلی را اینجا وارد کنید..."
-								dir="auto"
-							></textarea>
-							<!-- Sentence-aligned view like Google Translate -->
-							<div class="leading-relaxed text-base" dir="auto">
-								{#each sourceSentences as sentence, index}
-									<span 
-										class="inline transition-colors rounded px-0.5 {hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'}"
-										onmouseenter={() => hoveredSentenceIndex = index}
-										onmouseleave={() => hoveredSentenceIndex = -1}
-										role="button"
-										tabindex="0"
-									>{sentence}{index < sourceSentences.length - 1 ? ' ' : ''}</span>
-								{/each}
-								{#if sourceSentences.length === 0}
-									<textarea
-										bind:value={selectedChapter.sourceText}
-										class="w-full min-h-[200px] resize-none border rounded-lg p-3 bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 leading-relaxed"
-										placeholder="متن اصلی را اینجا وارد کنید..."
-										dir="auto"
-									></textarea>
-								{/if}
-							</div>
+							{#if editMode || sourceSentences.length === 0}
+								<!-- Edit mode: full textarea -->
+								<textarea
+									bind:value={selectedChapter.sourceText}
+									class="w-full h-full min-h-[300px] resize-none border rounded-lg p-4 bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 leading-relaxed text-base"
+									placeholder="متن اصلی را اینجا وارد کنید..."
+									dir="auto"
+								></textarea>
+							{:else}
+								<!-- View mode: Sentence-aligned view like Google Translate -->
+								<div class="leading-relaxed text-base" dir="auto">
+									{#each sourceSentences as sentence, index}
+										<span 
+											class="inline transition-colors rounded px-0.5 {hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'}"
+											onmouseenter={() => hoveredSentenceIndex = index}
+											onmouseleave={() => hoveredSentenceIndex = -1}
+											role="button"
+											tabindex="0"
+										>{sentence}{index < sourceSentences.length - 1 ? ' ' : ''}</span>
+									{/each}
+								</div>
+							{/if}
 						</div>
 					</div>
 
@@ -328,27 +514,34 @@
 							<h3 class="font-medium text-sm">ترجمه ({project.targetLanguage})</h3>
 						</div>
 						<div class="flex-1 overflow-auto p-4">
-							<!-- Sentence-aligned view like Google Translate -->
-							<div class="leading-relaxed text-base" dir="auto">
-								{#each translatedSentences as sentence, index}
-									<span 
-										class="inline transition-colors rounded px-0.5 {hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'}"
-										onmouseenter={() => hoveredSentenceIndex = index}
-										onmouseleave={() => hoveredSentenceIndex = -1}
-										role="button"
-										tabindex="0"
-									>{sentence}{index < translatedSentences.length - 1 ? ' ' : ''}</span>
-								{/each}
-								{#if translatedSentences.length === 0}
-									<div class="h-full flex items-center justify-center text-muted-foreground min-h-[200px]">
-										{#if selectedChapter.sourceText?.trim()}
-											<p>برای شروع ترجمه، دکمه "ترجمه این فصل" را بزنید</p>
-										{:else}
-											<p>ابتدا متن اصلی را وارد کنید</p>
-										{/if}
-									</div>
-								{/if}
-							</div>
+							{#if editMode}
+								<!-- Edit mode: show plain text -->
+								<div class="leading-relaxed text-base text-muted-foreground" dir="auto">
+									{selectedChapter.translatedText || 'ترجمه‌ای وجود ندارد'}
+								</div>
+							{:else}
+								<!-- View mode: Sentence-aligned view like Google Translate -->
+								<div class="leading-relaxed text-base" dir="auto">
+									{#each translatedSentences as sentence, index}
+										<span 
+											class="inline transition-colors rounded px-0.5 {hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'}"
+											onmouseenter={() => hoveredSentenceIndex = index}
+											onmouseleave={() => hoveredSentenceIndex = -1}
+											role="button"
+											tabindex="0"
+										>{sentence}{index < translatedSentences.length - 1 ? ' ' : ''}</span>
+									{/each}
+									{#if translatedSentences.length === 0}
+										<div class="h-full flex items-center justify-center text-muted-foreground min-h-[200px]">
+											{#if selectedChapter.sourceText?.trim()}
+												<p>برای شروع ترجمه، دکمه "ترجمه این فصل" را بزنید</p>
+											{:else}
+												<p>ابتدا متن اصلی را وارد کنید</p>
+											{/if}
+										</div>
+									{/if}
+								</div>
+							{/if}
 						</div>
 					</div>
 				</div>
@@ -385,6 +578,93 @@
 			</Button>
 			<Button onclick={addChapter} disabled={!newChapterTitle.trim()}>
 				ایجاد فصل
+			</Button>
+		</Dialog.Footer>
+	</Dialog.Content>
+</Dialog.Root>
+
+<!-- Delete Chapter Modal -->
+<Dialog.Root bind:open={showDeleteChapterModal}>
+	<Dialog.Content class="sm:max-w-md">
+		<Dialog.Header>
+			<Dialog.Title>🗑️ حذف فصل</Dialog.Title>
+			<Dialog.Description>آیا مطمئن هستید که می‌خواهید این فصل را حذف کنید؟</Dialog.Description>
+		</Dialog.Header>
+		<div class="py-4">
+			{#if chapterToDelete}
+				<div class="p-4 bg-destructive/10 rounded-lg border border-destructive/20">
+					<p class="font-medium text-destructive">{chapterToDelete.title}</p>
+					<p class="text-sm text-muted-foreground mt-1">این عمل قابل بازگشت نیست</p>
+				</div>
+			{/if}
+		</div>
+		<Dialog.Footer>
+			<Button variant="outline" onclick={() => { showDeleteChapterModal = false; chapterToDelete = null; }}>
+				انصراف
+			</Button>
+			<Button variant="destructive" onclick={() => deleteChapter(chapterToDelete)}>
+				حذف فصل
+			</Button>
+		</Dialog.Footer>
+	</Dialog.Content>
+</Dialog.Root>
+
+<!-- Export Modal -->
+<Dialog.Root bind:open={showExportModal}>
+	<Dialog.Content class="sm:max-w-md">
+		<Dialog.Header>
+			<Dialog.Title>📄 خروجی Word</Dialog.Title>
+			<Dialog.Description>دانلود همه فصل‌ها در یک فایل Word</Dialog.Description>
+		</Dialog.Header>
+		<div class="space-y-4 py-4">
+			<div class="p-4 bg-muted/50 rounded-lg">
+				<p class="text-sm mb-2">
+					<strong>{chapters.length}</strong> فصل برای خروجی
+				</p>
+				<p class="text-xs text-muted-foreground">
+					فایل Word شامل همه ترجمه‌ها خواهد بود
+				</p>
+			</div>
+			<label class="flex items-center gap-3 cursor-pointer">
+				<input 
+					type="checkbox" 
+					bind:checked={exportIncludeSource}
+					class="w-4 h-4 rounded border-gray-300"
+				/>
+				<span class="text-sm">شامل متن اصلی هم باشد</span>
+			</label>
+		</div>
+		<Dialog.Footer>
+			<Button variant="outline" onclick={() => showExportModal = false}>
+				انصراف
+			</Button>
+			<Button onclick={exportToWord}>
+				دانلود فایل Word
+			</Button>
+		</Dialog.Footer>
+	</Dialog.Content>
+</Dialog.Root>
+
+<!-- Unsaved Changes Warning Modal -->
+<Dialog.Root bind:open={showUnsavedWarning}>
+	<Dialog.Content class="sm:max-w-md">
+		<Dialog.Header>
+			<Dialog.Title>⚠️ تغییرات ذخیره نشده</Dialog.Title>
+			<Dialog.Description>تغییراتی در متن اصلی ایجاد کرده‌اید که ذخیره نشده است</Dialog.Description>
+		</Dialog.Header>
+		<div class="py-4">
+			<div class="p-4 bg-amber-50 dark:bg-amber-950 rounded-lg border border-amber-200 dark:border-amber-800">
+				<p class="text-sm text-amber-700 dark:text-amber-300">
+					آیا مطمئن هستید که می‌خواهید بدون ذخیره تغییرات، فصل را عوض کنید؟
+				</p>
+			</div>
+		</div>
+		<Dialog.Footer>
+			<Button variant="outline" onclick={cancelLeave}>
+				بمان و ذخیره کن
+			</Button>
+			<Button variant="destructive" onclick={confirmLeaveWithoutSaving}>
+				بدون ذخیره برو
 			</Button>
 		</Dialog.Footer>
 	</Dialog.Content>
