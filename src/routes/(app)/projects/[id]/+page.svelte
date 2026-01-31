@@ -32,6 +32,8 @@
 	);
 	let hoveredSentenceIndex = $state(-1);
 	let editMode = $state(false);
+	let failedSentenceIndices = $state([]);
+	let currentTranslatingIndex = $state(-1);
 	let lastTranslatedSourceText = $state('');
 	let lastSavedSourceText = $state('');
 	let showDeleteChapterModal = $state(false);
@@ -225,48 +227,60 @@
 		};
 	}
 
-	// Translate chapter paragraph by paragraph
+	// Translate chapter sentence by sentence
 	async function translateChapter() {
 		if (!selectedChapter || !settings?.openRouterApiKey) return;
 		if (!selectedChapter.sourceText?.trim()) return;
 		
 		translating = true;
 		translationProgress = 0;
+		failedSentenceIndices = [];
+		currentTranslatingIndex = 0;
 		
 		const model = project?.defaultModel || 'anthropic/claude-3.5-sonnet';
-		const paragraphs = selectedChapter.sourceText.split(/\n\n+/).filter(p => p.trim());
+		// Split by sentence delimiters (. ! ? ؟ 。) or newlines
+		const sentences = selectedChapter.sourceText.split(/(?<=[.!?؟。])\s*|\n+/).filter(s => s.trim());
 		const translatedParts = [];
 		
-		for (let i = 0; i < paragraphs.length; i++) {
-			const paragraph = paragraphs[i];
-			const prompt = buildTranslationPrompt(paragraph);
+		for (let i = 0; i < sentences.length; i++) {
+			currentTranslatingIndex = i;
+			const sentence = sentences[i];
+			const prompt = buildTranslationPrompt(sentence);
 			
-			const result = await openrouterService.sendMessage(
-				settings.openRouterApiKey,
-				model,
-				[
-					{ role: 'system', content: prompt.system },
-					{ role: 'user', content: `Translate this paragraph:\n\n${prompt.user}` }
-				],
-				{ projectId: project?.id }
-			);
-			
-			if (result.success) {
-				translatedParts.push(result.content.trim());
-			} else {
-				translatedParts.push(`[خطا در ترجمه: ${result.error}]`);
+			try {
+				const result = await openrouterService.sendMessage(
+					settings.openRouterApiKey,
+					model,
+					[
+						{ role: 'system', content: prompt.system },
+						{ role: 'user', content: `Translate this sentence:\n\n${prompt.user}` }
+					],
+					{ projectId: project?.id }
+				);
+				
+				if (result.success && result.content?.trim()) {
+					translatedParts.push(result.content.trim());
+				} else {
+					// Mark as failed
+					failedSentenceIndices = [...failedSentenceIndices, i];
+					translatedParts.push(`[❌ خطا: ${result.error || 'ترجمه نشد'}]`);
+				}
+			} catch (err) {
+				failedSentenceIndices = [...failedSentenceIndices, i];
+				translatedParts.push(`[❌ خطا: ${err.message || 'خطای ناشناخته'}]`);
 			}
 			
-			translationProgress = Math.round(((i + 1) / paragraphs.length) * 100);
+			translationProgress = Math.round(((i + 1) / sentences.length) * 100);
 			
-			// Update UI in real-time
-			selectedChapter.translatedText = translatedParts.join('\n\n');
+			// Update UI in real-time - join with space to match sentence structure
+			selectedChapter.translatedText = translatedParts.join(' ');
 		}
 		
 		// Save after translation
 		await saveChapter();
 		lastTranslatedSourceText = selectedChapter.sourceText;
 		editMode = false;
+		currentTranslatingIndex = -1;
 		translating = false;
 	}
 
@@ -430,11 +444,15 @@
 				</div>
 				<div class="flex items-center gap-2">
 					{#if translating}
-						<div class="flex items-center gap-2 text-sm text-muted-foreground">
+						<div class="flex items-center gap-3 text-sm text-muted-foreground bg-muted/50 px-3 py-1.5 rounded-lg">
 							<div class="w-32 h-2 bg-muted rounded-full overflow-hidden">
 								<div class="h-full bg-primary transition-all" style="width: {translationProgress}%"></div>
 							</div>
-							<span>{translationProgress}%</span>
+							<span class="font-medium">{translationProgress}%</span>
+							<span class="text-xs">جمله {currentTranslatingIndex + 1} از {sourceSentences.length}</span>
+							{#if failedSentenceIndices.length > 0}
+								<span class="text-xs text-destructive">({failedSentenceIndices.length} خطا)</span>
+							{/if}
 						</div>
 					{/if}
 					<Button variant="outline" onclick={() => showExportModal = true} disabled={chapters.length === 0}>
@@ -495,8 +513,14 @@
 								<!-- View mode: Sentence-aligned view like Google Translate -->
 								<div class="leading-relaxed text-base" dir="auto">
 									{#each sourceSentences as sentence, index}
+										{@const isTranslating = translating && currentTranslatingIndex === index}
+										{@const isFailed = failedSentenceIndices.includes(index)}
 										<span 
-											class="inline transition-colors rounded px-0.5 {hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'}"
+											class="inline transition-colors rounded px-0.5 {
+												isTranslating ? 'bg-blue-100 dark:bg-blue-900/50 animate-pulse ring-2 ring-blue-400' :
+												isFailed ? 'bg-red-100 dark:bg-red-900/30' :
+												hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'
+											}"
 											onmouseenter={() => hoveredSentenceIndex = index}
 											onmouseleave={() => hoveredSentenceIndex = -1}
 											role="button"
@@ -523,21 +547,36 @@
 								<!-- View mode: Sentence-aligned view like Google Translate -->
 								<div class="leading-relaxed text-base" dir="auto">
 									{#each translatedSentences as sentence, index}
+										{@const isFailed = failedSentenceIndices.includes(index)}
+										{@const isTranslating = translating && currentTranslatingIndex === index}
 										<span 
-											class="inline transition-colors rounded px-0.5 {hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'}"
+											class="inline transition-colors rounded px-0.5 {
+												isFailed ? 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700' :
+												isTranslating ? 'bg-blue-100 dark:bg-blue-900/50 animate-pulse' :
+												hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'
+											}"
 											onmouseenter={() => hoveredSentenceIndex = index}
 											onmouseleave={() => hoveredSentenceIndex = -1}
 											role="button"
 											tabindex="0"
+											title={isFailed ? 'این جمله ترجمه نشد - کلیک کنید برای ترجمه مجدد' : ''}
 										>{sentence}{index < translatedSentences.length - 1 ? ' ' : ''}</span>
 									{/each}
-									{#if translatedSentences.length === 0}
+									{#if translatedSentences.length === 0 && !translating}
 										<div class="h-full flex items-center justify-center text-muted-foreground min-h-[200px]">
 											{#if selectedChapter.sourceText?.trim()}
 												<p>برای شروع ترجمه، دکمه "ترجمه این فصل" را بزنید</p>
 											{:else}
 												<p>ابتدا متن اصلی را وارد کنید</p>
 											{/if}
+										</div>
+									{/if}
+									{#if translating && translatedSentences.length === 0}
+										<div class="h-full flex items-center justify-center text-muted-foreground min-h-[200px]">
+											<div class="flex items-center gap-2">
+												<div class="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+												<p>در حال ترجمه جمله اول...</p>
+											</div>
 										</div>
 									{/if}
 								</div>

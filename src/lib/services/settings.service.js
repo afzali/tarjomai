@@ -9,11 +9,13 @@ export const settingsService = {
   },
 
   async saveSettings(settings) {
+    // Convert Svelte 5 Proxy to plain object to avoid DataCloneError in IndexedDB
+    const plainSettings = JSON.parse(JSON.stringify(settings));
     const existing = await db.settings.get(SETTINGS_ID);
     if (existing) {
-      await db.settings.update(SETTINGS_ID, { ...settings, updatedAt: new Date() });
+      await db.settings.update(SETTINGS_ID, { ...plainSettings, updatedAt: new Date().toISOString() });
     } else {
-      await db.settings.add({ ...settings, id: SETTINGS_ID, createdAt: new Date(), updatedAt: new Date() });
+      await db.settings.add({ ...plainSettings, id: SETTINGS_ID, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
     }
     return this.getSettings();
   },

@@ -10,9 +10,11 @@ export const projectsService = {
   },
 
   async createProject(projectData) {
-    const now = new Date();
+    // Convert Svelte 5 Proxy to plain object
+    const plainData = JSON.parse(JSON.stringify(projectData));
+    const now = new Date().toISOString();
     const project = {
-      ...projectData,
+      ...plainData,
       createdAt: now,
       updatedAt: now,
       status: 'draft',
@@ -67,7 +69,9 @@ export const projectsService = {
   },
 
   async updateProject(id, updates) {
-    await db.projects.update(id, { ...updates, updatedAt: new Date() });
+    // Convert Svelte 5 Proxy to plain object
+    const plainUpdates = JSON.parse(JSON.stringify(updates));
+    await db.projects.update(id, { ...plainUpdates, updatedAt: new Date().toISOString() });
     return this.getProject(id);
   },
 

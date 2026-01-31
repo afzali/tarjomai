@@ -10,19 +10,21 @@ export const chaptersService = {
   },
 
   async createChapter(chapterData) {
-    const existingChapters = await this.getChaptersByProject(chapterData.projectId);
+    // Convert Svelte 5 Proxy to plain object
+    const plainData = JSON.parse(JSON.stringify(chapterData));
+    const existingChapters = await this.getChaptersByProject(plainData.projectId);
     const maxOrder = existingChapters.length > 0 
       ? Math.max(...existingChapters.map(c => c.order)) 
       : 0;
 
     const chapter = {
-      ...chapterData,
-      order: chapterData.order ?? maxOrder + 1,
+      ...plainData,
+      order: plainData.order ?? maxOrder + 1,
       status: 'pending',
-      sourceText: chapterData.sourceText || '',
+      sourceText: plainData.sourceText || '',
       translatedText: '',
-      createdAt: new Date(),
-      updatedAt: new Date()
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
 
     const id = await db.chapters.add(chapter);
@@ -30,7 +32,9 @@ export const chaptersService = {
   },
 
   async updateChapter(id, updates) {
-    await db.chapters.update(id, { ...updates, updatedAt: new Date() });
+    // Convert Svelte 5 Proxy to plain object
+    const plainUpdates = JSON.parse(JSON.stringify(updates));
+    await db.chapters.update(id, { ...plainUpdates, updatedAt: new Date().toISOString() });
     return this.getChapter(id);
   },
 
