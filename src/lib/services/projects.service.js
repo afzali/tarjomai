@@ -16,10 +16,54 @@ export const projectsService = {
       createdAt: now,
       updatedAt: now,
       status: 'draft',
+      setupStep: 'created', // 'created' | 'analyze' | 'compare' | 'quick-setup' | 'completed'
+      wizardData: {
+        analyze: { sampleText: '', result: null },
+        compare: { sampleText: '', results: [], judgeResults: null },
+        quickSetup: { model: '', rules: null }
+      },
       chapters: []
     };
     const id = await db.projects.add(project);
     return { ...project, id };
+  },
+
+  async updateSetupStep(id, step) {
+    await db.projects.update(id, { setupStep: step, updatedAt: new Date() });
+    return this.getProject(id);
+  },
+
+  async saveWizardStepData(id, stepName, data) {
+    const project = await this.getProject(id);
+    const wizardData = project?.wizardData || {};
+    wizardData[stepName] = { ...wizardData[stepName], ...data };
+    await db.projects.update(id, { wizardData, updatedAt: new Date() });
+    return this.getProject(id);
+  },
+
+  async getWizardStepData(id, stepName) {
+    const project = await this.getProject(id);
+    return project?.wizardData?.[stepName] || null;
+  },
+
+  getNextSetupStep(currentStep, isGuided = true) {
+    const guidedPath = ['created', 'analyze', 'compare', 'completed'];
+    const quickPath = ['created', 'quick-setup', 'completed'];
+    const path = isGuided ? guidedPath : quickPath;
+    const currentIndex = path.indexOf(currentStep);
+    if (currentIndex === -1 || currentIndex >= path.length - 1) return null;
+    return path[currentIndex + 1];
+  },
+
+  getSetupStepUrl(projectId, step) {
+    const stepUrls = {
+      'created': `/projects/${projectId}/analyze`,
+      'analyze': `/projects/${projectId}/analyze`,
+      'compare': `/projects/${projectId}/compare`,
+      'quick-setup': `/projects/${projectId}/quick-setup`,
+      'completed': `/projects/${projectId}`
+    };
+    return stepUrls[step] || `/projects/${projectId}`;
   },
 
   async updateProject(id, updates) {

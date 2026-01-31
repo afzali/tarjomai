@@ -9,7 +9,7 @@
 	import { Label } from '$lib/components/ui-rtl/label';
 	import { Textarea } from '$lib/components/ui-rtl/textarea';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui-rtl/card';
-	import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '$lib/components/ui-rtl/select';
+	import * as Select from '$lib/components/ui-rtl/select';
 
 	let projectId = $derived($page.params.id);
 	let project = $state(null);
@@ -23,6 +23,38 @@
 	let fidelity = $state('medium');
 	let customRules = $state('');
 	let systemPrompt = $state('');
+
+	const toneOptions = [
+		{ value: 'formal', label: 'رسمی' },
+		{ value: 'informal', label: 'غیررسمی' },
+		{ value: 'literary', label: 'ادبی' },
+		{ value: 'scientific', label: 'علمی' },
+		{ value: 'conversational', label: 'محاوره‌ای' }
+	];
+
+	const vocabularyOptions = [
+		{ value: 'simple', label: 'ساده' },
+		{ value: 'medium', label: 'متوسط' },
+		{ value: 'advanced', label: 'پیشرفته' }
+	];
+
+	const translationTypeOptions = [
+		{ value: 'literal', label: 'تحت‌اللفظی' },
+		{ value: 'balanced', label: 'متعادل' },
+		{ value: 'free', label: 'آزاد' }
+	];
+
+	const fidelityOptions = [
+		{ value: 'low', label: 'کم' },
+		{ value: 'medium', label: 'متوسط' },
+		{ value: 'high', label: 'زیاد' },
+		{ value: 'literal', label: 'تحت‌اللفظی' }
+	];
+
+	const toneLabel = $derived(toneOptions.find(t => t.value === tone)?.label ?? 'انتخاب');
+	const vocabularyLabel = $derived(vocabularyOptions.find(v => v.value === vocabularyLevel)?.label ?? 'انتخاب');
+	const translationTypeLabel = $derived(translationTypeOptions.find(t => t.value === translationType)?.label ?? 'انتخاب');
+	const fidelityLabel = $derived(fidelityOptions.find(f => f.value === fidelity)?.label ?? 'انتخاب');
 
 	onMount(async () => {
 		const data = await currentProjectStore.load(parseInt(projectId));
@@ -140,53 +172,50 @@
 			<div class="grid grid-cols-2 gap-4">
 				<div class="space-y-2">
 					<Label>لحن</Label>
-					<Select bind:value={tone}>
-						<SelectTrigger><SelectValue /></SelectTrigger>
-						<SelectContent>
-							<SelectItem value="formal">رسمی</SelectItem>
-							<SelectItem value="informal">غیررسمی</SelectItem>
-							<SelectItem value="literary">ادبی</SelectItem>
-							<SelectItem value="scientific">علمی</SelectItem>
-							<SelectItem value="conversational">محاوره‌ای</SelectItem>
-						</SelectContent>
-					</Select>
+					<Select.Root type="single" value={tone} onValueChange={(v) => tone = v || 'formal'}>
+						<Select.Trigger class="w-full">{toneLabel}</Select.Trigger>
+						<Select.Content>
+							{#each toneOptions as opt}
+								<Select.Item value={opt.value} label={opt.label}>{opt.label}</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
 				</div>
 
 				<div class="space-y-2">
 					<Label>سطح واژگان</Label>
-					<Select bind:value={vocabularyLevel}>
-						<SelectTrigger><SelectValue /></SelectTrigger>
-						<SelectContent>
-							<SelectItem value="simple">ساده</SelectItem>
-							<SelectItem value="medium">متوسط</SelectItem>
-							<SelectItem value="advanced">پیشرفته</SelectItem>
-						</SelectContent>
-					</Select>
+					<Select.Root type="single" value={vocabularyLevel} onValueChange={(v) => vocabularyLevel = v || 'medium'}>
+						<Select.Trigger class="w-full">{vocabularyLabel}</Select.Trigger>
+						<Select.Content>
+							{#each vocabularyOptions as opt}
+								<Select.Item value={opt.value} label={opt.label}>{opt.label}</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
 				</div>
 
 				<div class="space-y-2">
 					<Label>نوع ترجمه</Label>
-					<Select bind:value={translationType}>
-						<SelectTrigger><SelectValue /></SelectTrigger>
-						<SelectContent>
-							<SelectItem value="literal">تحت‌اللفظی</SelectItem>
-							<SelectItem value="balanced">متعادل</SelectItem>
-							<SelectItem value="free">آزاد</SelectItem>
-						</SelectContent>
-					</Select>
+					<Select.Root type="single" value={translationType} onValueChange={(v) => translationType = v || 'balanced'}>
+						<Select.Trigger class="w-full">{translationTypeLabel}</Select.Trigger>
+						<Select.Content>
+							{#each translationTypeOptions as opt}
+								<Select.Item value={opt.value} label={opt.label}>{opt.label}</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
 				</div>
 
 				<div class="space-y-2">
 					<Label>وفاداری به متن</Label>
-					<Select bind:value={fidelity}>
-						<SelectTrigger><SelectValue /></SelectTrigger>
-						<SelectContent>
-							<SelectItem value="low">کم</SelectItem>
-							<SelectItem value="medium">متوسط</SelectItem>
-							<SelectItem value="high">زیاد</SelectItem>
-							<SelectItem value="literal">تحت‌اللفظی</SelectItem>
-						</SelectContent>
-					</Select>
+					<Select.Root type="single" value={fidelity} onValueChange={(v) => fidelity = v || 'medium'}>
+						<Select.Trigger class="w-full">{fidelityLabel}</Select.Trigger>
+						<Select.Content>
+							{#each fidelityOptions as opt}
+								<Select.Item value={opt.value} label={opt.label}>{opt.label}</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
 				</div>
 			</div>
 
@@ -205,9 +234,11 @@
 	<div class="flex flex-wrap gap-2">
 		<Button variant="outline" href="/projects/{projectId}">بازگشت</Button>
 		<Button variant="outline" onclick={exportRules}>خروجی JSON</Button>
-		<label class="inline-flex">
-			<Button variant="outline" as="span">ورودی JSON</Button>
+		<label class="inline-flex cursor-pointer">
 			<input type="file" accept=".json" class="hidden" onchange={importRules} />
+			<span class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2">
+				ورودی JSON
+			</span>
 		</label>
 		<Button variant="outline" onclick={saveAsPreset}>ذخیره به عنوان پیش‌تنظیم</Button>
 		<Button onclick={saveRules} disabled={saving}>

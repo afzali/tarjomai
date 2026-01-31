@@ -45,14 +45,13 @@ function createCurrentProjectStore() {
     },
 
     async updateProject(updates) {
-      const current = await new Promise(resolve => {
-        const unsub = subscribe(value => {
-          resolve(value);
-          unsub();
-        });
+      let current;
+      const unsub = subscribe(value => {
+        current = value;
       });
+      unsub();
 
-      if (!current.project) return null;
+      if (!current?.project) return null;
 
       const project = await projectsService.updateProject(current.project.id, updates);
       update(s => ({ ...s, project }));
@@ -60,14 +59,13 @@ function createCurrentProjectStore() {
     },
 
     async addChapter(chapterData) {
-      const current = await new Promise(resolve => {
-        const unsub = subscribe(value => {
-          resolve(value);
-          unsub();
-        });
+      let current;
+      const unsub = subscribe(value => {
+        current = value;
       });
+      unsub();
 
-      if (!current.project) return null;
+      if (!current?.project) return null;
 
       const chapter = await chaptersService.createChapter({
         ...chapterData,
@@ -96,14 +94,13 @@ function createCurrentProjectStore() {
     },
 
     async saveRules(rulesData) {
-      const current = await new Promise(resolve => {
-        const unsub = subscribe(value => {
-          resolve(value);
-          unsub();
-        });
+      let current;
+      const unsub = subscribe(value => {
+        current = value;
       });
+      unsub();
 
-      if (!current.project) return null;
+      if (!current?.project) return null;
 
       const rules = await rulesService.saveRules(current.project.id, rulesData);
       update(s => ({ ...s, rules }));

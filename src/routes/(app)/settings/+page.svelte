@@ -318,6 +318,9 @@
 							<Button variant="outline" onclick={loadLocalUsage}>
 								به‌روزرسانی
 							</Button>
+							<Button href="/settings/usage-history">
+								مشاهده جزئیات کامل
+							</Button>
 							<Button variant="destructive" onclick={clearLocalUsage}>
 								پاک کردن تاریخچه
 							</Button>

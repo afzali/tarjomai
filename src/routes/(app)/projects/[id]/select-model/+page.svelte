@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { currentProjectStore } from '$lib/stores/currentProject.store.js';
+	import projectsService from '$lib/services/projects.service.js';
 	import { Button } from '$lib/components/ui-rtl/button';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui-rtl/card';
 
@@ -23,6 +24,7 @@
 		await currentProjectStore.updateProject({
 			defaultModel: selectedModel
 		});
+		await projectsService.updateSetupStep(parseInt(projectId), 'completed');
 		goto(`/projects/${projectId}`);
 	}
 </script>

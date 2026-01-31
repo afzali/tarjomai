@@ -23,6 +23,44 @@ export const usageService = {
       .toArray();
   },
 
+  async getAllHistory() {
+    return await db.usageHistory
+      .orderBy('timestamp')
+      .reverse()
+      .toArray();
+  },
+
+  async searchHistory(query, filters = {}) {
+    let records = await db.usageHistory.orderBy('timestamp').reverse().toArray();
+    
+    // Filter by search query (model name)
+    if (query) {
+      const lowerQuery = query.toLowerCase();
+      records = records.filter(r => r.model?.toLowerCase().includes(lowerQuery));
+    }
+    
+    // Filter by date range
+    if (filters.startDate) {
+      records = records.filter(r => new Date(r.timestamp) >= new Date(filters.startDate));
+    }
+    if (filters.endDate) {
+      records = records.filter(r => new Date(r.timestamp) <= new Date(filters.endDate));
+    }
+    
+    // Filter by model
+    if (filters.model) {
+      records = records.filter(r => r.model === filters.model);
+    }
+    
+    return records;
+  },
+
+  async getUniqueModels() {
+    const all = await db.usageHistory.toArray();
+    const models = [...new Set(all.map(r => r.model))];
+    return models.filter(Boolean);
+  },
+
   async getTotalUsage() {
     const all = await db.usageHistory.toArray();
     return all.reduce((acc, item) => ({

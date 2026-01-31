@@ -2,9 +2,13 @@
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
 	import { currentProjectStore } from '$lib/stores/currentProject.store.js';
+	import projectsService from '$lib/services/projects.service.js';
 	import { Button } from '$lib/components/ui-rtl/button';
 	import { Textarea } from '$lib/components/ui-rtl/textarea';
+	import { Input } from '$lib/components/ui-rtl/input';
+	import { Label } from '$lib/components/ui-rtl/label';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui-rtl/card';
+	import * as Dialog from '$lib/components/ui-rtl/dialog';
 
 	let projectId = $derived($page.params.id);
 	let project = $state(null);
@@ -12,6 +16,35 @@
 	let selectedChapter = $state(null);
 	let loading = $state(true);
 	let translating = $state(false);
+	let showNewChapterModal = $state(false);
+	let newChapterTitle = $state('');
+
+	// Check if setup is incomplete
+	const isSetupIncomplete = $derived(
+		project && project.setupStep && project.setupStep !== 'completed'
+	);
+
+	const setupStepLabels = {
+		'created': 'شروع ویزارد',
+		'analyze': 'ادامه تحلیل سبک',
+		'compare': 'ادامه مقایسه مدل‌ها',
+		'quick-setup': 'ادامه تنظیم سریع'
+	};
+
+	const continueSetupUrl = $derived(
+		project ? projectsService.getSetupStepUrl(project.id, project.setupStep || 'created') : '#'
+	);
+
+	const continueSetupLabel = $derived(
+		project?.setupStep ? (setupStepLabels[project.setupStep] || 'ادامه ویزارد') : 'شروع ویزارد'
+	);
+
+	async function skipSetup() {
+		if (project) {
+			await projectsService.updateSetupStep(project.id, 'completed');
+			project = await projectsService.getProject(project.id);
+		}
+	}
 
 	onMount(async () => {
 		const data = await currentProjectStore.load(parseInt(projectId));
@@ -33,16 +66,21 @@
 		return unsub;
 	});
 
+	function openNewChapterModal() {
+		newChapterTitle = '';
+		showNewChapterModal = true;
+	}
+
 	async function addChapter() {
-		const title = prompt('عنوان فصل جدید:');
-		if (title) {
-			const chapter = await currentProjectStore.addChapter({
-				title,
-				sourceText: '',
-				translatedText: ''
-			});
-			selectedChapter = chapter;
-		}
+		if (!newChapterTitle.trim()) return;
+		const chapter = await currentProjectStore.addChapter({
+			title: newChapterTitle.trim(),
+			sourceText: '',
+			translatedText: ''
+		});
+		selectedChapter = chapter;
+		showNewChapterModal = false;
+		newChapterTitle = '';
 	}
 
 	async function saveChapter() {
@@ -59,7 +97,7 @@
 	<div class="w-64 border-l bg-muted/30 p-4 flex flex-col">
 		<div class="flex items-center justify-between mb-4">
 			<h2 class="font-semibold">فصل‌ها</h2>
-			<Button size="sm" variant="outline" onclick={addChapter}>
+			<Button size="sm" variant="outline" onclick={openNewChapterModal}>
 				+ فصل جدید
 			</Button>
 		</div>
@@ -102,6 +140,26 @@
 				<p class="text-muted-foreground">پروژه یافت نشد</p>
 			</div>
 		{:else}
+			{#if isSetupIncomplete}
+				<div class="p-4 bg-amber-50 dark:bg-amber-950 border-b border-amber-200 dark:border-amber-800 flex items-center justify-between">
+					<div class="flex items-center gap-3">
+						<span class="text-amber-600 dark:text-amber-400">⚡</span>
+						<div>
+							<p class="font-medium text-amber-800 dark:text-amber-200">راه‌اندازی ناقص است</p>
+							<p class="text-sm text-amber-600 dark:text-amber-400">برای بهترین نتیجه، ویزارد تنظیم را کامل کنید</p>
+						</div>
+					</div>
+					<div class="flex gap-2">
+						<Button variant="outline" size="sm" onclick={skipSetup}>
+							رد شدن
+						</Button>
+						<Button size="sm" href={continueSetupUrl}>
+							{continueSetupLabel}
+						</Button>
+					</div>
+				</div>
+			{/if}
+
 			<div class="p-4 border-b flex items-center justify-between">
 				<h1 class="text-xl font-bold">{project.title}</h1>
 				<div class="flex gap-2">
@@ -146,3 +204,32 @@
 		{/if}
 	</div>
 </div>
+
+<!-- New Chapter Modal -->
+<Dialog.Root bind:open={showNewChapterModal}>
+	<Dialog.Content class="sm:max-w-md">
+		<Dialog.Header>
+			<Dialog.Title>فصل جدید</Dialog.Title>
+			<Dialog.Description>عنوان فصل جدید را وارد کنید</Dialog.Description>
+		</Dialog.Header>
+		<div class="space-y-4 py-4">
+			<div class="space-y-2">
+				<Label for="chapter-title">عنوان فصل</Label>
+				<Input 
+					id="chapter-title"
+					bind:value={newChapterTitle}
+					placeholder="مثال: فصل اول - مقدمه"
+					onkeydown={(e) => e.key === 'Enter' && addChapter()}
+				/>
+			</div>
+		</div>
+		<Dialog.Footer>
+			<Button variant="outline" onclick={() => showNewChapterModal = false}>
+				انصراف
+			</Button>
+			<Button onclick={addChapter} disabled={!newChapterTitle.trim()}>
+				ایجاد فصل
+			</Button>
+		</Dialog.Footer>
+	</Dialog.Content>
+</Dialog.Root>

@@ -2,8 +2,9 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { projectsStore } from '$lib/stores/projects.store.js';
+	import projectsService from '$lib/services/projects.service.js';
 	import { Button } from '$lib/components/ui-rtl/button';
-	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui-rtl/card';
+	import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '$lib/components/ui-rtl/card';
 
 	let projects = $state([]);
 	let loading = $state(true);
@@ -87,9 +88,17 @@
 							<span>{project.sourceLanguage} → {project.targetLanguage}</span>
 							<span>{formatDate(project.updatedAt)}</span>
 						</div>
+						{#if project.setupStep && project.setupStep !== 'completed'}
+							<div class="mt-2 px-2 py-1 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded text-xs text-amber-700 dark:text-amber-300">
+								⚡ ویزارد ناقص
+							</div>
+						{/if}
 						<div class="mt-4 flex gap-2">
 							<Button variant="outline" size="sm" href="/projects/{project.id}">
 								ادامه کار
+							</Button>
+							<Button variant="ghost" size="sm" href="/projects/{project.id}/wizard">
+								🧙 مرور ویزارد
 							</Button>
 						</div>
 					</CardContent>

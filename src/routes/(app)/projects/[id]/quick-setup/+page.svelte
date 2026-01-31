@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { currentProjectStore } from '$lib/stores/currentProject.store.js';
+	import projectsService from '$lib/services/projects.service.js';
 	import { Button } from '$lib/components/ui-rtl/button';
 	import { Input } from '$lib/components/ui-rtl/input';
 	import { Label } from '$lib/components/ui-rtl/label';
@@ -80,6 +81,7 @@
 			customRules: customRules.split('\n').filter(r => r.trim())
 		});
 
+		await projectsService.updateSetupStep(parseInt(projectId), 'completed');
 		goto(`/projects/${projectId}`);
 	}
 </script>
