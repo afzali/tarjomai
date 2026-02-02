@@ -2,6 +2,7 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { projectsService } from '$lib/services/projects.service.js';
 	import { currentProjectStore } from '$lib/stores/currentProject.store.js';
 	import { settingsStore } from '$lib/stores/settings.store.js';
 	import { openrouterService } from '$lib/services/openrouter.service.js';
@@ -11,7 +12,6 @@
 	import { Textarea } from '$lib/components/ui-rtl/textarea';
 	import { Label } from '$lib/components/ui-rtl/label';
 	import * as Select from '$lib/components/ui-rtl/select';
-	import * as Collapsible from '$lib/components/ui-rtl/collapsible';
 
 	let projectId = $derived($page.params.id);
 	let project = $state(null);
@@ -26,9 +26,8 @@
 		{ id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', provider: 'Anthropic' },
 		{ id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'OpenAI' },
 		{ id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', provider: 'OpenAI' },
-		{ id: 'google/gemini-1.5-pro', name: 'Gemini 1.5 Pro', provider: 'Google' },
-		{ id: 'google/gemini-1.5-flash', name: 'Gemini 1.5 Flash', provider: 'Google' },
-		{ id: 'meta-llama/llama-3.1-70b-instruct', name: 'Llama 3.1 70B', provider: 'Meta' },
+		{ id: 'google/gemini-2.0-flash-exp:free', name: 'Gemini 2.0 Flash (Free)', provider: 'Google' },
+		{ id: 'meta-llama/llama-3.3-70b-instruct', name: 'Llama 3.3 70B', provider: 'Meta' },
 		{ id: 'deepseek/deepseek-chat', name: 'DeepSeek V3', provider: 'DeepSeek' },
 		{ id: 'mistralai/mistral-large-latest', name: 'Mistral Large', provider: 'Mistral' }
 	];
@@ -42,17 +41,16 @@
 		// OpenAI
 		{ id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'OpenAI' },
 		{ id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', provider: 'OpenAI' },
-		{ id: 'openai/gpt-4-turbo', name: 'GPT-4 Turbo', provider: 'OpenAI' },
 		{ id: 'openai/o1-preview', name: 'o1 Preview', provider: 'OpenAI' },
 		{ id: 'openai/o1-mini', name: 'o1 Mini', provider: 'OpenAI' },
 		// Google
-		{ id: 'google/gemini-1.5-pro', name: 'Gemini 1.5 Pro', provider: 'Google' },
-		{ id: 'google/gemini-1.5-flash', name: 'Gemini 1.5 Flash', provider: 'Google' },
+		{ id: 'google/gemini-pro-1.5', name: 'Gemini 1.5 Pro', provider: 'Google' },
+		{ id: 'google/gemini-flash-1.5', name: 'Gemini 1.5 Flash', provider: 'Google' },
 		{ id: 'google/gemini-2.0-flash-exp:free', name: 'Gemini 2.0 Flash (Free)', provider: 'Google' },
 		// Meta
+		{ id: 'meta-llama/llama-3.3-70b-instruct', name: 'Llama 3.3 70B', provider: 'Meta' },
 		{ id: 'meta-llama/llama-3.1-70b-instruct', name: 'Llama 3.1 70B', provider: 'Meta' },
 		{ id: 'meta-llama/llama-3.1-8b-instruct', name: 'Llama 3.1 8B', provider: 'Meta' },
-		{ id: 'meta-llama/llama-3.3-70b-instruct', name: 'Llama 3.3 70B', provider: 'Meta' },
 		// Mistral
 		{ id: 'mistralai/mistral-large-latest', name: 'Mistral Large', provider: 'Mistral' },
 		{ id: 'mistralai/mistral-small-latest', name: 'Mistral Small', provider: 'Mistral' },
@@ -119,6 +117,14 @@ Respond in JSON format:
 		if (data) {
 			project = data.project;
 			rules = data.rules;
+			
+			// Load saved comparison data
+			const savedData = await projectsService.getWizardStepData(parseInt(projectId), 'compare');
+			if (savedData) {
+				if (savedData.sampleText) sampleText = savedData.sampleText;
+				if (savedData.results) results = savedData.results;
+				if (savedData.judgeResults) judgeResults = savedData.judgeResults;
+			}
 		}
 		settings = await settingsStore.load();
 	});
@@ -136,6 +142,10 @@ Respond in JSON format:
 		
 		comparing = true;
 		results = [];
+		judgeResults = null;
+
+		// Save sample text
+		await projectsService.saveWizardStepData(parseInt(projectId), 'compare', { sampleText });
 
 		const rulesPrompt = rules ? `
 Translation rules:
@@ -168,15 +178,23 @@ Provide only the translation, no explanations.`;
 		});
 
 		results = await Promise.all(promises);
+		
+		// Save results
+		await projectsService.saveWizardStepData(parseInt(projectId), 'compare', { results });
+		
 		comparing = false;
 	}
 
 	function setRating(index, rating) {
 		results[index].rating = rating;
 		results = [...results];
+		// Save updated ratings
+		projectsService.saveWizardStepData(parseInt(projectId), 'compare', { results });
 	}
 
 	function selectModel(modelId) {
+		// Update default model for project
+		projectsService.updateProject(parseInt(projectId), { defaultModel: modelId });
 		goto(`/projects/${projectId}/select-model?model=${encodeURIComponent(modelId)}`);
 	}
 
@@ -205,7 +223,12 @@ Provide only the translation, no explanations.`;
 
 		if (result.success) {
 			try {
-				const parsed = JSON.parse(result.content);
+				let jsonContent = result.content.trim();
+				// Remove markdown code blocks if present
+				jsonContent = jsonContent.replace(/```json\s*([\s\S]*?)\s*```/g, '$1');
+				jsonContent = jsonContent.replace(/```\s*([\s\S]*?)\s*```/g, '$1');
+				
+				const parsed = JSON.parse(jsonContent);
 				judgeResults = parsed;
 
 				// Apply ratings from judge
@@ -219,8 +242,16 @@ Provide only the translation, no explanations.`;
 					});
 					results = [...results];
 				}
-			} catch {
-				judgeResults = { error: 'خطا در پردازش نتیجه داوری', raw: result.content };
+				
+				// Save all data
+				await projectsService.saveWizardStepData(parseInt(projectId), 'compare', { 
+					results, 
+					judgeResults: parsed 
+				});
+
+			} catch (e) {
+				console.error('JSON Parse Error:', e);
+				judgeResults = { error: 'خطا در پردازش نتیجه داوری: ساختار JSON نامعتبر است.', raw: result.content };
 			}
 		} else {
 			judgeResults = { error: result.error };

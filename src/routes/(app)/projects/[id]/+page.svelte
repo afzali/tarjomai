@@ -27,9 +27,13 @@
 	let sourceSentences = $derived(
 		selectedChapter?.sourceText?.split(/(?<=[.!?؟。])\s*|\n+/).filter(s => s.trim()) || []
 	);
+	
+	// Use explicit segments during translation for perfect alignment, fallback to split text otherwise
+	let translatedSegments = $state([]);
 	let translatedSentences = $derived(
-		selectedChapter?.translatedText?.split(/(?<=[.!?؟。])\s*|\n+/).filter(s => s.trim()) || []
+		translating ? translatedSegments : (selectedChapter?.translatedText?.split(/(?<=[.!?؟。])\s*|\n+/).filter(s => s.trim()) || [])
 	);
+
 	let hoveredSentenceIndex = $state(-1);
 	let editMode = $state(false);
 	let failedSentenceIndices = $state([]);
@@ -41,6 +45,10 @@
 	let hasUnsavedChanges = $state(false);
 	let showUnsavedWarning = $state(false);
 	let pendingNavigation = $state(null);
+	
+	// Translation progress tracking
+	let startTime = $state(0);
+	let estimatedTimeRemaining = $state(0);
 
 	// Check if setup is incomplete
 	const isSetupIncomplete = $derived(
@@ -199,7 +207,12 @@
 		const sourceLanguage = project?.sourceLanguage || 'en';
 		const targetLanguage = project?.targetLanguage || 'fa';
 		
-		let systemPrompt = `You are a professional translator. Translate the following text from ${sourceLanguage} to ${targetLanguage}.`;
+		let systemPrompt = `You are a professional translator. Translate the following text from ${sourceLanguage} to ${targetLanguage}.
+IMPORTANT OUTPUT RULES:
+1. Output ONLY the translation.
+2. Do NOT include "Translation:" or any other prefix/suffix.
+3. Do NOT include notes or explanations.
+4. Maintain the original tone and style.`;
 		
 		if (rules) {
 			if (rules.tone?.length > 0) {
@@ -236,15 +249,47 @@
 		translationProgress = 0;
 		failedSentenceIndices = [];
 		currentTranslatingIndex = 0;
+		startTime = Date.now();
+		estimatedTimeRemaining = null; // Reset to null
 		
 		const model = project?.defaultModel || 'anthropic/claude-3.5-sonnet';
-		// Split by sentence delimiters (. ! ? ؟ 。) or newlines
-		const sentences = selectedChapter.sourceText.split(/(?<=[.!?؟。])\s*|\n+/).filter(s => s.trim());
-		const translatedParts = [];
 		
-		for (let i = 0; i < sentences.length; i++) {
+		// 1. Split source into paragraphs to preserve structure
+		const paragraphs = selectedChapter.sourceText.split(/\n+/);
+		const flatSentences = [];
+		const sentenceMap = []; // Maps flat index to { pIndex, sIndex } to reconstruct later if needed
+		
+		// 2. Prepare flat list of sentences for translation
+		paragraphs.forEach((para, pIndex) => {
+			// Split paragraph into sentences (keeping delimiters attached if possible, or just split)
+			const sents = para.split(/(?<=[.!?؟。])\s*/).filter(s => s.trim());
+			
+			if (sents.length === 0 && para.trim()) {
+				// Paragraph has text but no sentence delimiters
+				flatSentences.push(para.trim());
+				sentenceMap.push({ pIndex, sIndex: 0 });
+			} else {
+				sents.forEach((s, sIndex) => {
+					flatSentences.push(s.trim());
+					sentenceMap.push({ pIndex, sIndex });
+				});
+			}
+		});
+
+		const translatedSegments = new Array(flatSentences.length).fill('');
+		
+		for (let i = 0; i < flatSentences.length; i++) {
+			if (!translating) break;
+
 			currentTranslatingIndex = i;
-			const sentence = sentences[i];
+			
+			// Auto-scroll
+			const sentenceElement = document.getElementById(`source-sentence-${i}`);
+			if (sentenceElement) {
+				sentenceElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			}
+
+			const sentence = flatSentences[i];
 			const prompt = buildTranslationPrompt(sentence);
 			
 			try {
@@ -259,29 +304,67 @@
 				);
 				
 				if (result.success && result.content?.trim()) {
-					translatedParts.push(result.content.trim());
+					// Clean up the content
+					let cleanContent = result.content.trim();
+					// Remove "Translation:" prefix if present (case insensitive)
+					cleanContent = cleanContent.replace(/^(Translation:|Translated text:)\s*/i, '');
+					// Remove leading/trailing quotes if the whole text is quoted
+					if (cleanContent.match(/^["«].*["»]$/)) {
+						cleanContent = cleanContent.slice(1, -1);
+					}
+					translatedSegments[i] = cleanContent.trim();
 				} else {
-					// Mark as failed
 					failedSentenceIndices = [...failedSentenceIndices, i];
-					translatedParts.push(`[❌ خطا: ${result.error || 'ترجمه نشد'}]`);
+					translatedSegments[i] = `[❌ خطا: ${result.error || 'ترجمه نشد'}]`;
 				}
 			} catch (err) {
 				failedSentenceIndices = [...failedSentenceIndices, i];
-				translatedParts.push(`[❌ خطا: ${err.message || 'خطای ناشناخته'}]`);
+				translatedSegments[i] = `[❌ خطا: ${err.message || 'خطای ناشناخته'}]`;
 			}
 			
-			translationProgress = Math.round(((i + 1) / sentences.length) * 100);
+			// Calculate progress
+			const progress = (i + 1) / flatSentences.length;
+			translationProgress = Math.round(progress * 100);
 			
-			// Update UI in real-time - join with space to match sentence structure
-			selectedChapter.translatedText = translatedParts.join(' ');
+			const elapsed = Date.now() - startTime;
+			if (progress > 0) {
+				const estimatedTotal = elapsed / progress;
+				const remaining = estimatedTotal - elapsed;
+				estimatedTimeRemaining = Math.ceil(remaining / 1000);
+			}
+			
+			// Reconstruct text with paragraphs
+			let reconstructedText = '';
+			let currentParaIndex = -1;
+			
+			for (let j = 0; j <= i; j++) {
+				const map = sentenceMap[j];
+				if (map.pIndex !== currentParaIndex) {
+					if (currentParaIndex !== -1) reconstructedText += '\n\n';
+					currentParaIndex = map.pIndex;
+				} else {
+					if (reconstructedText && !reconstructedText.endsWith('\n\n')) reconstructedText += ' ';
+				}
+				reconstructedText += translatedSegments[j];
+			}
+			
+			selectedChapter.translatedText = reconstructedText;
 		}
 		
-		// Save after translation
 		await saveChapter();
 		lastTranslatedSourceText = selectedChapter.sourceText;
 		editMode = false;
 		currentTranslatingIndex = -1;
 		translating = false;
+		estimatedTimeRemaining = null;
+	}
+
+	function formatTime(seconds) {
+		if (seconds === null || seconds === undefined) return '';
+		if (seconds < 60) return `${seconds} ثانیه`;
+		const mins = Math.floor(seconds / 60);
+		const secs = seconds % 60;
+		return `${mins} دقیقه و ${secs} ثانیه`;
 	}
 
 	// Get model display name
@@ -444,14 +527,27 @@
 				</div>
 				<div class="flex items-center gap-2">
 					{#if translating}
-						<div class="flex items-center gap-3 text-sm text-muted-foreground bg-muted/50 px-3 py-1.5 rounded-lg">
-							<div class="w-32 h-2 bg-muted rounded-full overflow-hidden">
-								<div class="h-full bg-primary transition-all" style="width: {translationProgress}%"></div>
+						<div class="flex items-center gap-4 text-sm text-muted-foreground bg-muted/50 px-4 py-2 rounded-lg border shadow-sm">
+							<div class="flex flex-col gap-1 min-w-[200px]">
+								<div class="flex justify-between text-xs">
+									<span>پیشرفت کل: {translationProgress}%</span>
+									<span>{currentTranslatingIndex + 1} / {sourceSentences.length}</span>
+								</div>
+								<div class="w-full h-2 bg-muted rounded-full overflow-hidden">
+									<div class="h-full bg-primary transition-all duration-300 ease-out" style="width: {translationProgress}%"></div>
+								</div>
+								{#if estimatedTimeRemaining !== null}
+									<div class="text-xs text-muted-foreground text-center">
+										~ {formatTime(estimatedTimeRemaining)} مانده
+									</div>
+								{/if}
 							</div>
-							<span class="font-medium">{translationProgress}%</span>
-							<span class="text-xs">جمله {currentTranslatingIndex + 1} از {sourceSentences.length}</span>
+							
 							{#if failedSentenceIndices.length > 0}
-								<span class="text-xs text-destructive">({failedSentenceIndices.length} خطا)</span>
+								<div class="flex items-center gap-1 text-xs text-destructive bg-destructive/10 px-2 py-1 rounded">
+									<span class="font-bold">{failedSentenceIndices.length}</span>
+									<span>خطا</span>
+								</div>
 							{/if}
 						</div>
 					{/if}
@@ -516,6 +612,7 @@
 										{@const isTranslating = translating && currentTranslatingIndex === index}
 										{@const isFailed = failedSentenceIndices.includes(index)}
 										<span 
+											id="source-sentence-{index}"
 											class="inline transition-colors rounded px-0.5 {
 												isTranslating ? 'bg-blue-100 dark:bg-blue-900/50 animate-pulse ring-2 ring-blue-400' :
 												isFailed ? 'bg-red-100 dark:bg-red-900/30' :

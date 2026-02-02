@@ -38,8 +38,16 @@ export const projectsService = {
   async saveWizardStepData(id, stepName, data) {
     const project = await this.getProject(id);
     const wizardData = project?.wizardData || {};
-    wizardData[stepName] = { ...wizardData[stepName], ...data };
-    await db.projects.update(id, { wizardData, updatedAt: new Date() });
+    
+    // Convert data to plain object to handle Svelte 5 proxies
+    const plainData = JSON.parse(JSON.stringify(data));
+    
+    wizardData[stepName] = { ...wizardData[stepName], ...plainData };
+    
+    // Also ensure wizardData itself is clean (though it should be if project comes from db)
+    const cleanWizardData = JSON.parse(JSON.stringify(wizardData));
+    
+    await db.projects.update(id, { wizardData: cleanWizardData, updatedAt: new Date().toISOString() });
     return this.getProject(id);
   },
 
