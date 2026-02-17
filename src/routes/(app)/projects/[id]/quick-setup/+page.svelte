@@ -10,23 +10,37 @@
 	import { Textarea } from '$lib/components/ui-rtl/textarea';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui-rtl/card';
 	import * as Select from '$lib/components/ui-rtl/select';
+	import { allModels as fallbackModels, modelsToSelectItems } from '$lib/models.js';
+	import { fetchModels } from '$lib/stores/models.store.js';
+	import { settingsStore } from '$lib/stores/settings.store.js';
 
 	let projectId = $derived($page.params.id);
 	let project = $state(null);
 	let saving = $state(false);
 
-	let selectedModel = $state('anthropic/claude-3.5-sonnet');
+	let selectedModel = $state('anthropic/claude-sonnet-4');
 	let tone = $state('formal');
 	let vocabularyLevel = $state('medium');
 	let translationType = $state('balanced');
 	let customRules = $state('');
+	let settings = $state(null);
 
-	const models = [
-		{ value: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet' },
-		{ value: 'openai/gpt-4o', label: 'GPT-4o' },
-		{ value: 'google/gemini-pro-1.5', label: 'Gemini Pro 1.5' },
-		{ value: 'meta-llama/llama-3.1-70b-instruct', label: 'Llama 3.1 70B' }
-	];
+	// Dynamic model list
+	let availableModels = $state(fallbackModels);
+	let loadingModels = $state(false);
+	let modelSearchQuery = $state('');
+
+	const filteredModels = $derived(
+		modelSearchQuery.trim()
+			? availableModels.filter(m =>
+				m.name.toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
+				m.id.toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
+				m.provider.toLowerCase().includes(modelSearchQuery.toLowerCase())
+			)
+			: availableModels
+	);
+
+	const models = $derived(modelsToSelectItems(filteredModels));
 
 	const toneItems = [
 		{ value: 'formal', label: 'رسمی' },
@@ -48,7 +62,7 @@
 		{ value: 'free', label: 'آزاد' }
 	];
 
-	const modelLabel = $derived(models.find(m => m.value === selectedModel)?.label ?? 'انتخاب مدل');
+	const modelLabel = $derived(availableModels.find(m => m.id === selectedModel)?.name ?? 'انتخاب مدل');
 	const toneLabel = $derived(toneItems.find(t => t.value === tone)?.label ?? 'انتخاب لحن');
 	const vocabularyLabel = $derived(vocabularyItems.find(v => v.value === vocabularyLevel)?.label ?? 'انتخاب سطح');
 	const translationTypeLabel = $derived(translationTypeItems.find(t => t.value === translationType)?.label ?? 'انتخاب نوع');
@@ -62,6 +76,18 @@
 				vocabularyLevel = data.rules.vocabularyLevel || 'medium';
 				translationType = data.rules.translationType || 'balanced';
 				customRules = data.rules.customRules?.join('\n') || '';
+			}
+		}
+
+		// Fetch models from OpenRouter API
+		settings = await settingsStore.load();
+		if (settings?.openRouterApiKey) {
+			loadingModels = true;
+			try {
+				const fetched = await fetchModels(settings.openRouterApiKey);
+				if (fetched.length > 0) availableModels = fetched;
+			} finally {
+				loadingModels = false;
 			}
 		}
 	});
@@ -96,19 +122,33 @@
 
 	<Card class="mb-6">
 		<CardHeader>
-			<CardTitle>انتخاب مدل</CardTitle>
+			<CardTitle>
+				انتخاب مدل
+				{#if loadingModels}
+					<span class="text-xs text-muted-foreground font-normal mr-2">در حال دریافت لیست مدل‌ها...</span>
+				{/if}
+			</CardTitle>
 		</CardHeader>
-		<CardContent>
+		<CardContent class="space-y-2">
+			<Input
+				bind:value={modelSearchQuery}
+				placeholder="جستجوی مدل... (نام، شناسه یا ارائه‌دهنده)"
+				dir="auto"
+			/>
 			<Select.Root type="single" bind:value={selectedModel}>
 				<Select.Trigger class="w-full">
 					{modelLabel}
 				</Select.Trigger>
-				<Select.Content>
+				<Select.Content class="max-h-[300px] overflow-y-auto">
 					{#each models as model (model.value)}
 						<Select.Item value={model.value} label={model.label}>{model.label}</Select.Item>
 					{/each}
+					{#if models.length === 0 && modelSearchQuery.trim()}
+						<div class="p-2 text-sm text-muted-foreground text-center">مدلی پیدا نشد</div>
+					{/if}
 				</Select.Content>
 			</Select.Root>
+			<p class="text-xs text-muted-foreground">{availableModels.length} مدل موجود</p>
 		</CardContent>
 	</Card>
 

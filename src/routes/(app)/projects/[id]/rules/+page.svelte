@@ -11,6 +11,9 @@
 	import { Textarea } from '$lib/components/ui-rtl/textarea';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui-rtl/card';
 	import * as Select from '$lib/components/ui-rtl/select';
+	import { allModels as fallbackModels } from '$lib/models.js';
+	import { fetchModels } from '$lib/stores/models.store.js';
+	import { settingsStore } from '$lib/stores/settings.store.js';
 
 	let projectId = $derived($page.params.id);
 	let project = $state(null);
@@ -18,20 +21,22 @@
 	let presets = $state([]);
 	let saving = $state(false);
 	let selectedModel = $state('');
+	let settings = $state(null);
 
-	// Available models for selection
-	const availableModels = [
-		{ id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', provider: 'Anthropic' },
-		{ id: 'anthropic/claude-3-5-haiku', name: 'Claude 3.5 Haiku', provider: 'Anthropic' },
-		{ id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'OpenAI' },
-		{ id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', provider: 'OpenAI' },
-		{ id: 'google/gemini-1.5-pro', name: 'Gemini 1.5 Pro', provider: 'Google' },
-		{ id: 'google/gemini-1.5-flash', name: 'Gemini 1.5 Flash', provider: 'Google' },
-		{ id: 'meta-llama/llama-3.1-70b-instruct', name: 'Llama 3.1 70B', provider: 'Meta' },
-		{ id: 'deepseek/deepseek-chat', name: 'DeepSeek V3', provider: 'DeepSeek' },
-		{ id: 'mistralai/mistral-large-latest', name: 'Mistral Large', provider: 'Mistral' },
-		{ id: 'qwen/qwen-2.5-72b-instruct', name: 'Qwen 2.5 72B', provider: 'Qwen' }
-	];
+	// Dynamic model list from OpenRouter API
+	let availableModels = $state(fallbackModels);
+	let loadingModels = $state(false);
+	let modelSearchQuery = $state('');
+
+	const filteredModels = $derived(
+		modelSearchQuery.trim()
+			? availableModels.filter(m =>
+				m.name.toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
+				m.id.toLowerCase().includes(modelSearchQuery.toLowerCase()) ||
+				m.provider.toLowerCase().includes(modelSearchQuery.toLowerCase())
+			)
+			: availableModels
+	);
 
 	const selectedModelLabel = $derived(
 		availableModels.find(m => m.id === selectedModel)?.name ?? 'انتخاب مدل'
@@ -89,9 +94,21 @@
 				customRules = rules.customRules?.join('\n') || '';
 				systemPrompt = rules.systemPrompt || '';
 			}
-			selectedModel = data.project?.defaultModel || 'anthropic/claude-3.5-sonnet';
+			selectedModel = data.project?.defaultModel || 'anthropic/claude-sonnet-4';
 		}
 		presets = await rulesService.getPresets();
+
+		// Fetch models from OpenRouter API
+		settings = await settingsStore.load();
+		if (settings?.openRouterApiKey) {
+			loadingModels = true;
+			try {
+				const fetched = await fetchModels(settings.openRouterApiKey);
+				if (fetched.length > 0) availableModels = fetched;
+			} finally {
+				loadingModels = false;
+			}
+		}
 	});
 
 	async function saveRules() {
@@ -179,11 +196,22 @@
 		</CardHeader>
 		<CardContent>
 			<div class="space-y-2">
-				<Label>مدل پیش‌فرض برای ترجمه</Label>
-				<Select.Root type="single" value={selectedModel} onValueChange={(v) => selectedModel = v || 'anthropic/claude-3.5-sonnet'}>
+				<Label>
+					مدل پیش‌فرض برای ترجمه
+					{#if loadingModels}
+						<span class="text-xs text-muted-foreground mr-2">در حال دریافت لیست مدل‌ها...</span>
+					{/if}
+				</Label>
+				<Input
+					bind:value={modelSearchQuery}
+					placeholder="جستجوی مدل... (نام، شناسه یا ارائه‌دهنده)"
+					dir="auto"
+					class="mb-2"
+				/>
+				<Select.Root type="single" value={selectedModel} onValueChange={(v) => selectedModel = v || 'anthropic/claude-sonnet-4'}>
 					<Select.Trigger class="w-full">{selectedModelLabel}</Select.Trigger>
-					<Select.Content>
-						{#each availableModels as model}
+					<Select.Content class="max-h-[300px] overflow-y-auto">
+						{#each filteredModels as model}
 							<Select.Item value={model.id} label={model.name}>
 								<span class="flex items-center gap-2">
 									<span class="text-xs text-muted-foreground">{model.provider}</span>
@@ -191,9 +219,12 @@
 								</span>
 							</Select.Item>
 						{/each}
+						{#if filteredModels.length === 0 && modelSearchQuery.trim()}
+							<div class="p-2 text-sm text-muted-foreground text-center">مدلی پیدا نشد</div>
+						{/if}
 					</Select.Content>
 				</Select.Root>
-				<p class="text-xs text-muted-foreground">این مدل برای ترجمه فصل‌ها استفاده خواهد شد</p>
+				<p class="text-xs text-muted-foreground">این مدل برای ترجمه فصل‌ها استفاده خواهد شد ({availableModels.length} مدل موجود)</p>
 			</div>
 		</CardContent>
 	</Card>

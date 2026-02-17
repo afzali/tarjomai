@@ -252,7 +252,7 @@ IMPORTANT OUTPUT RULES:
 		startTime = Date.now();
 		estimatedTimeRemaining = null; // Reset to null
 		
-		const model = project?.defaultModel || 'anthropic/claude-3.5-sonnet';
+		const model = project?.defaultModel || 'anthropic/claude-sonnet-4';
 		
 		// 1. Split source into paragraphs to preserve structure
 		const paragraphs = selectedChapter.sourceText.split(/\n+/);

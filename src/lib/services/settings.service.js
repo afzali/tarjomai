@@ -39,9 +39,9 @@ export const settingsService = {
       openRouterApiKey: '',
       uiLanguage: 'fa',
       defaultModels: {
-        styleAnalysis: 'anthropic/claude-3.5-sonnet',
-        translation: 'anthropic/claude-3.5-sonnet',
-        scoring: 'anthropic/claude-3.5-sonnet'
+        styleAnalysis: 'anthropic/claude-sonnet-4',
+        translation: 'anthropic/claude-sonnet-4',
+        scoring: 'anthropic/claude-sonnet-4'
       },
       defaultSourceLanguage: 'en',
       defaultTargetLanguage: 'fa',

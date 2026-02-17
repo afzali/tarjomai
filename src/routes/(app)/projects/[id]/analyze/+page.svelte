@@ -129,7 +129,7 @@ Respond ONLY with valid JSON.`;
 
 		const result = await openrouterService.sendMessage(
 			settings.openRouterApiKey,
-			settings.defaultModels?.styleAnalysis || 'anthropic/claude-3.5-sonnet',
+			settings.defaultModels?.styleAnalysis || 'anthropic/claude-sonnet-4',
 			[{ role: 'user', content: prompt }]
 		);
 

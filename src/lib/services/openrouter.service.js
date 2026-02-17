@@ -65,8 +65,10 @@ export const openrouterService = {
           body: JSON.stringify({
             model,
             messages,
-            temperature: options.temperature ?? 0.7,
-            max_tokens: options.max_tokens ?? 4096
+            temperature: options.temperature ?? 0,
+            max_tokens: options.max_tokens ?? 4096,
+            seed: options.seed ?? 42,
+            top_p: options.top_p ?? 1
           })
         });
 
@@ -136,8 +138,10 @@ export const openrouterService = {
         body: JSON.stringify({
           model,
           messages,
-          temperature: options.temperature ?? 0.7,
+          temperature: options.temperature ?? 0,
           max_tokens: options.max_tokens ?? 4096,
+          seed: options.seed ?? 42,
+          top_p: options.top_p ?? 1,
           stream: true
         })
       });
