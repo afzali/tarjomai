@@ -15,6 +15,8 @@
 	import * as Select from '$lib/components/ui-rtl/select';
 	import * as Tabs from '$lib/components/ui-rtl/tabs';
 	import { toneOptions, vocabularyOptions, translationTypeOptions, structureOptions, getOptionLabel } from '$lib/translationOptions.js';
+	import { allModels as fallbackModels, getModelName } from '$lib/models.js';
+	import { fetchModels } from '$lib/stores/models.store.js';
 
 	let projectId = $derived($page.params.id);
 	let project = $state(null);
@@ -23,6 +25,43 @@
 	let analysisResult = $state(null);
 	let settings = $state(null);
 	let activeTab = $state('ai');
+
+	// Model selection
+	let availableModels = $state(fallbackModels);
+	let loadingModels = $state(false);
+	let analyzeModelSearchQuery = $state('');
+	let analyzeModel = $state('anthropic/claude-sonnet-4');
+
+	const filteredAnalyzeModels = $derived(
+		analyzeModelSearchQuery.trim()
+			? availableModels.filter(m =>
+				m.name.toLowerCase().includes(analyzeModelSearchQuery.toLowerCase()) ||
+				m.id.toLowerCase().includes(analyzeModelSearchQuery.toLowerCase()) ||
+				m.provider.toLowerCase().includes(analyzeModelSearchQuery.toLowerCase())
+			)
+			: availableModels
+	);
+
+	const analyzeModelName = $derived(availableModels.find(m => m.id === analyzeModel)?.name || analyzeModel);
+
+	// Editable analysis prompt
+	let showAnalyzePrompt = $state(false);
+	let analyzePrompt = $state(`Analyze the writing style of the following text and provide a JSON response with these fields:
+- tone: array of tones (formal, informal, literary, scientific, conversational, religious)
+- vocabularyLevel: string (simple, medium, advanced)
+- sentenceStructure: string (short, medium, long, mixed)
+- fidelity: string (low, medium, high, literal)
+- translationType: string (literal, free, balanced)
+- customRules: array of specific rules for translation
+
+Text to analyze:
+{sampleText}
+
+Respond ONLY with valid JSON.`);
+
+	// Analysis status
+	let analyzeStatus = $state('idle'); // 'idle' | 'loading' | 'success' | 'error'
+	let analyzeError = $state('');
 
 	let analyzeOptions = $state({
 		tone: true,
@@ -63,6 +102,22 @@
 			}
 		}
 		settings = await settingsStore.load();
+
+		// Fetch models from OpenRouter API
+		if (settings?.openRouterApiKey) {
+			loadingModels = true;
+			try {
+				const fetched = await fetchModels(settings.openRouterApiKey);
+				if (fetched.length > 0) availableModels = fetched;
+			} finally {
+				loadingModels = false;
+			}
+		}
+
+		// Use default model from settings if available
+		if (settings?.defaultModels?.styleAnalysis) {
+			analyzeModel = settings.defaultModels.styleAnalysis;
+		}
 	});
 
 	// Auto-save wizard data when values change
@@ -87,30 +142,30 @@
 		
 		analyzing = true;
 		analysisResult = null;
+		analyzeStatus = 'loading';
+		analyzeError = '';
 
-		const prompt = `Analyze the writing style of the following text and provide a JSON response with these fields:
-- tone: array of tones (formal, informal, literary, scientific, conversational, religious)
-- vocabularyLevel: string (simple, medium, advanced)
-- sentenceStructure: string (short, medium, long, mixed)
-- fidelity: string (low, medium, high, literal)
-- translationType: string (literal, free, balanced)
-- customRules: array of specific rules for translation
-
-Text to analyze:
-${sampleText}
-
-Respond ONLY with valid JSON.`;
+		const finalPrompt = analyzePrompt.replace('{sampleText}', sampleText);
 
 		const result = await openrouterService.sendMessage(
 			settings.openRouterApiKey,
-			settings.defaultModels?.styleAnalysis || 'anthropic/claude-sonnet-4',
-			[{ role: 'user', content: prompt }],
+			analyzeModel,
+			[{ role: 'user', content: finalPrompt }],
 			{ temperature: 0, seed: 42, top_p: 1 }
 		);
 
 		if (result.success) {
+			analyzeStatus = 'success';
 			try {
-				const parsed = JSON.parse(result.content);
+				let jsonContent = result.content.trim();
+				const codeBlockMatch = jsonContent.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+				if (codeBlockMatch) jsonContent = codeBlockMatch[1].trim();
+				if (!jsonContent.startsWith('{')) {
+					const idx = jsonContent.indexOf('{');
+					if (idx !== -1) jsonContent = jsonContent.substring(idx);
+				}
+
+				const parsed = JSON.parse(jsonContent);
 				analysisResult = parsed;
 				
 				// Populate editable fields
@@ -129,10 +184,14 @@ Respond ONLY with valid JSON.`;
 				if (Array.isArray(parsed.customRules)) {
 					editableCustomRules = parsed.customRules.join('\n');
 				}
-			} catch {
+			} catch (e) {
+				analyzeStatus = 'error';
+				analyzeError = 'خطا در پردازش JSON نتیجه';
 				analysisResult = { error: 'خطا در پردازش نتیجه', raw: result.content };
 			}
 		} else {
+			analyzeStatus = 'error';
+			analyzeError = result.error;
 			analysisResult = { error: result.error };
 		}
 
@@ -236,9 +295,73 @@ Respond ONLY with valid JSON.`;
 						</label>
 					</div>
 
-					<Button onclick={analyzeStyle} disabled={analyzing || !sampleText.trim()}>
-						{analyzing ? 'در حال تحلیل...' : 'شروع تحلیل'}
-					</Button>
+					<!-- Model Selection -->
+					<div class="space-y-2">
+						<Label>
+							مدل تحلیل
+							{#if loadingModels}
+								<span class="text-xs text-muted-foreground mr-2">در حال دریافت لیست مدل‌ها...</span>
+							{/if}
+						</Label>
+						<Input
+							bind:value={analyzeModelSearchQuery}
+							placeholder="جستجوی مدل..."
+							dir="auto"
+							class="mb-1"
+						/>
+						<Select.Root type="single" value={analyzeModel} onValueChange={(v) => analyzeModel = v}>
+							<Select.Trigger class="w-full max-w-md">
+								{analyzeModelName}
+							</Select.Trigger>
+							<Select.Content class="max-h-[300px] overflow-y-auto">
+								{#each filteredAnalyzeModels as model}
+									<Select.Item value={model.id} label={model.name}>{model.name}</Select.Item>
+								{/each}
+								{#if filteredAnalyzeModels.length === 0 && analyzeModelSearchQuery.trim()}
+									<div class="p-2 text-sm text-muted-foreground text-center">مدلی پیدا نشد</div>
+								{/if}
+							</Select.Content>
+						</Select.Root>
+					</div>
+
+					<div class="flex items-center gap-3">
+						<Button onclick={analyzeStyle} disabled={analyzing || !sampleText.trim()}>
+							{analyzing ? 'در حال تحلیل...' : 'شروع تحلیل'}
+						</Button>
+						<Button variant="outline" onclick={() => showAnalyzePrompt = !showAnalyzePrompt}>
+							{showAnalyzePrompt ? 'بستن پرامپت' : 'مشاهده / ویرایش پرامپت'}
+						</Button>
+					</div>
+
+					{#if showAnalyzePrompt}
+						<div class="p-4 rounded-lg border bg-muted/30 space-y-2">
+							<Label class="mb-1 block text-sm font-medium">پرامپت تحلیل (قابل ویرایش)</Label>
+							<Textarea
+								bind:value={analyzePrompt}
+								rows={10}
+								class="font-mono text-sm"
+								dir="ltr"
+							/>
+							<p class="text-xs text-muted-foreground">
+								متغیر {'{sampleText}'} با متن نمونه جایگزین می‌شود.
+							</p>
+						</div>
+					{/if}
+
+					{#if analyzeStatus !== 'idle'}
+						<div class="flex items-center gap-2 text-sm p-3 rounded-lg border {analyzeStatus === 'loading' ? 'bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800' : analyzeStatus === 'success' ? 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800' : 'bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800'}">
+							{#if analyzeStatus === 'loading'}
+								<span class="animate-spin">⏳</span>
+								<span>در حال ارسال به {analyzeModelName}...</span>
+							{:else if analyzeStatus === 'success'}
+								<span>✅</span>
+								<span class="text-green-700 dark:text-green-300">تحلیل با موفقیت انجام شد ({analyzeModelName})</span>
+							{:else if analyzeStatus === 'error'}
+								<span>❌</span>
+								<span class="text-red-700 dark:text-red-300">خطا: {analyzeError}</span>
+							{/if}
+						</div>
+					{/if}
 				</CardContent>
 			</Card>
 

@@ -24,6 +24,17 @@
 	let comparing = $state(false);
 	let results = $state([]);
 
+	// Per-model progress tracking: { modelId, status: 'pending'|'loading'|'success'|'error', error? }
+	let modelStatuses = $state([]);
+	let currentModelIndex = $state(-1);
+
+	// Judge progress
+	let judgeStatus = $state('idle'); // 'idle' | 'loading' | 'success' | 'error'
+	let judgeError = $state('');
+
+	// Show translation prompt
+	let showTranslationPrompt = $state(false);
+
 	// Dynamic model list from OpenRouter API
 	let availableModels = $state(fallbackModels);
 	let loadingModels = $state(false);
@@ -134,17 +145,7 @@ Respond in JSON format:
 		}
 	}
 
-	async function compareModels() {
-		if (!sampleText.trim() || selectedModels.length === 0) return;
-		
-		comparing = true;
-		results = [];
-		judgeResults = null;
-
-		// Save sample text
-		await projectsService.saveWizardStepData(parseInt(projectId), 'compare', { sampleText });
-
-		// Build system prompt identical to main translation page (buildTranslationPrompt)
+	function buildTranslationSystemPrompt() {
 		const sourceLanguage = project?.sourceLanguage || 'English';
 		const targetLanguage = project?.targetLanguage || 'Persian';
 		
@@ -174,27 +175,85 @@ IMPORTANT OUTPUT RULES:
 		}
 		
 		systemPrompt += `\n\nIMPORTANT: Translate paragraph by paragraph. Keep the same paragraph structure. Do not add or remove paragraphs.`;
+		return systemPrompt;
+	}
 
-		const promises = selectedModels.map(async (modelId) => {
-			const result = await openrouterService.sendMessage(
-				settings.openRouterApiKey,
-				modelId,
-				[
-					{ role: 'system', content: systemPrompt },
-					{ role: 'user', content: `Translate this sentence:\n\n${sampleText}` }
-				],
-				{ temperature: 0, seed: 42, top_p: 1 }
-			);
-			return {
-				modelId,
-				modelName: availableModels.find(m => m.id === modelId)?.name || modelId,
-				translation: result.success ? result.content : null,
-				error: result.success ? null : result.error,
-				rating: 0
-			};
-		});
+	const translationPromptPreview = $derived(buildTranslationSystemPrompt());
 
-		results = await Promise.all(promises);
+	async function compareModels() {
+		if (!sampleText.trim() || selectedModels.length === 0) return;
+		
+		comparing = true;
+		results = [];
+		judgeResults = null;
+		currentModelIndex = -1;
+
+		// Initialize statuses
+		modelStatuses = selectedModels.map(modelId => ({
+			modelId,
+			modelName: availableModels.find(m => m.id === modelId)?.name || modelId,
+			status: 'pending',
+			error: null
+		}));
+
+		// Save sample text
+		await projectsService.saveWizardStepData(parseInt(projectId), 'compare', { sampleText });
+
+		const systemPrompt = buildTranslationSystemPrompt();
+
+		// Run models sequentially so user can see progress
+		for (let i = 0; i < selectedModels.length; i++) {
+			const modelId = selectedModels[i];
+			currentModelIndex = i;
+			modelStatuses[i].status = 'loading';
+			modelStatuses = [...modelStatuses];
+
+			try {
+				const result = await openrouterService.sendMessage(
+					settings.openRouterApiKey,
+					modelId,
+					[
+						{ role: 'system', content: systemPrompt },
+						{ role: 'user', content: `Translate this sentence:\n\n${sampleText}` }
+					],
+					{ temperature: 0, seed: 42, top_p: 1 }
+				);
+
+				if (result.success) {
+					modelStatuses[i].status = 'success';
+					results = [...results, {
+						modelId,
+						modelName: modelStatuses[i].modelName,
+						translation: result.content,
+						error: null,
+						rating: 0
+					}];
+				} else {
+					modelStatuses[i].status = 'error';
+					modelStatuses[i].error = result.error;
+					results = [...results, {
+						modelId,
+						modelName: modelStatuses[i].modelName,
+						translation: null,
+						error: result.error,
+						rating: 0
+					}];
+				}
+			} catch (e) {
+				modelStatuses[i].status = 'error';
+				modelStatuses[i].error = e.message || 'خطای ناشناخته';
+				results = [...results, {
+					modelId,
+					modelName: modelStatuses[i].modelName,
+					translation: null,
+					error: e.message || 'خطای ناشناخته',
+					rating: 0
+				}];
+			}
+			modelStatuses = [...modelStatuses];
+		}
+
+		currentModelIndex = -1;
 		
 		// Save results
 		await projectsService.saveWizardStepData(parseInt(projectId), 'compare', { results });
@@ -253,6 +312,8 @@ IMPORTANT OUTPUT RULES:
 
 		judging = true;
 		judgeResults = null;
+		judgeStatus = 'loading';
+		judgeError = '';
 
 		const translationsText = allTranslationsForJudge.map((r, i) => 
 			`[${i + 1}] ${r.isManual ? 'Manual' : 'Model'}: ${r.modelName}\nTranslation: ${r.translation}`
@@ -272,6 +333,7 @@ IMPORTANT OUTPUT RULES:
 		);
 
 		if (result.success) {
+			judgeStatus = 'success';
 			try {
 				let jsonContent = result.content.trim();
 				
@@ -347,12 +409,16 @@ IMPORTANT OUTPUT RULES:
 			} catch (e) {
 				console.error('JSON Parse Error:', e);
 				console.error('Raw content:', result.content);
+				judgeStatus = 'error';
+				judgeError = `خطا در پردازش نتیجه داوری: ${e.message}`;
 				judgeResults = { 
 					error: `خطا در پردازش نتیجه داوری: ${e.message}. احتمالاً پاسخ مدل بریده شده یا فرمت JSON نامعتبر است. لطفاً دوباره تلاش کنید یا مدل داور را تغییر دهید.`, 
 					raw: result.content 
 				};
 			}
 		} else {
+			judgeStatus = 'error';
+			judgeError = result.error;
 			judgeResults = { error: result.error };
 		}
 
@@ -428,9 +494,62 @@ IMPORTANT OUTPUT RULES:
 				</div>
 			</div>
 
-			<Button onclick={compareModels} disabled={comparing || !sampleText.trim() || selectedModels.length === 0}>
-				{comparing ? 'در حال مقایسه...' : 'شروع مقایسه'}
-			</Button>
+			<div class="flex items-center gap-3">
+				<Button onclick={compareModels} disabled={comparing || !sampleText.trim() || selectedModels.length === 0}>
+					{comparing ? 'در حال مقایسه...' : 'شروع مقایسه'}
+				</Button>
+				<Button variant="outline" onclick={() => showTranslationPrompt = !showTranslationPrompt}>
+					{showTranslationPrompt ? 'بستن پرامپت' : 'مشاهده پرامپت ترجمه'}
+				</Button>
+			</div>
+
+			{#if showTranslationPrompt}
+				<div class="mt-4 p-4 rounded-lg border bg-muted/30">
+					<Label class="mb-2 block text-sm font-medium">پرامپت سیستم ترجمه (فقط خواندنی)</Label>
+					<pre class="text-xs whitespace-pre-wrap font-mono bg-background p-3 rounded border max-h-[300px] overflow-auto" dir="ltr">{translationPromptPreview}</pre>
+					<p class="text-xs text-muted-foreground mt-2">برای ویرایش پرامپت، به صفحه <a href="/projects/{projectId}/rules" class="underline text-primary">قوانین ترجمه</a> بروید.</p>
+				</div>
+			{/if}
+
+			{#if comparing && modelStatuses.length > 0}
+				<div class="mt-4 p-4 rounded-lg border bg-muted/20 space-y-3">
+					<div class="flex items-center justify-between text-sm font-medium">
+						<span>پیشرفت ترجمه</span>
+						<span class="text-muted-foreground">
+							{modelStatuses.filter(s => s.status === 'success' || s.status === 'error').length} / {modelStatuses.length}
+						</span>
+					</div>
+					<div class="w-full bg-muted rounded-full h-2">
+						<div
+							class="bg-primary h-2 rounded-full transition-all duration-300"
+							style="width: {(modelStatuses.filter(s => s.status === 'success' || s.status === 'error').length / modelStatuses.length) * 100}%"
+						></div>
+					</div>
+					<div class="space-y-1.5">
+						{#each modelStatuses as ms, i}
+							<div class="flex items-center gap-2 text-sm">
+								{#if ms.status === 'pending'}
+									<span class="w-5 h-5 flex items-center justify-center text-muted-foreground">⏳</span>
+								{:else if ms.status === 'loading'}
+									<span class="w-5 h-5 flex items-center justify-center"><span class="animate-spin">⏳</span></span>
+								{:else if ms.status === 'success'}
+									<span class="w-5 h-5 flex items-center justify-center text-green-600">✅</span>
+								{:else if ms.status === 'error'}
+									<span class="w-5 h-5 flex items-center justify-center text-red-600">❌</span>
+								{/if}
+								<span class="flex-1 {ms.status === 'loading' ? 'font-medium' : ''}">{ms.modelName}</span>
+								{#if ms.status === 'loading'}
+									<span class="text-xs text-muted-foreground animate-pulse">در حال ارسال...</span>
+								{:else if ms.status === 'error'}
+									<span class="text-xs text-red-500 truncate max-w-[200px]" title={ms.error}>{ms.error}</span>
+								{:else if ms.status === 'success'}
+									<span class="text-xs text-green-600">موفق</span>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
 		</CardContent>
 	</Card>
 
@@ -544,6 +663,21 @@ IMPORTANT OUTPUT RULES:
 						{showJudgePrompt ? 'بستن پرامپت' : 'ویرایش پرامپت'}
 					</Button>
 				</div>
+
+				{#if judgeStatus !== 'idle'}
+					<div class="mt-3 flex items-center gap-2 text-sm p-3 rounded-lg border {judgeStatus === 'loading' ? 'bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800' : judgeStatus === 'success' ? 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800' : 'bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800'}">
+						{#if judgeStatus === 'loading'}
+							<span class="animate-spin">⏳</span>
+							<span>در حال ارسال به مدل داور ({judgeModelName})...</span>
+						{:else if judgeStatus === 'success'}
+							<span>✅</span>
+							<span class="text-green-700 dark:text-green-300">داوری با موفقیت انجام شد</span>
+						{:else if judgeStatus === 'error'}
+							<span>❌</span>
+							<span class="text-red-700 dark:text-red-300">خطا در داوری: {judgeError}</span>
+						{/if}
+					</div>
+				{/if}
 
 				{#if showJudgePrompt}
 					<div class="mt-4">
