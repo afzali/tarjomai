@@ -64,7 +64,13 @@ export const rulesService = {
 
   async importRules(projectId, data) {
     if (!data.rules) return null;
-    return this.saveRules(projectId, data.rules);
+    const rules = { ...data.rules };
+    if (typeof rules.tone === 'string') {
+      rules.tone = rules.tone ? [rules.tone] : ['formal'];
+    } else if (!Array.isArray(rules.tone) || rules.tone.length === 0) {
+      rules.tone = ['formal'];
+    }
+    return this.saveRules(projectId, rules);
   },
 
   getDefaultRules() {

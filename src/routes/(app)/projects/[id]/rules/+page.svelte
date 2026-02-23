@@ -43,14 +43,21 @@
 		availableModels.find(m => m.id === selectedModel)?.name ?? 'انتخاب مدل'
 	);
 
-	let tone = $state('formal');
+	let tone = $state(['formal']);
 	let vocabularyLevel = $state('medium');
 	let translationType = $state('balanced');
 	let fidelity = $state('medium');
 	let customRules = $state('');
 	let systemPrompt = $state('');
 
-	const toneLabel = $derived(getOptionLabel(toneOptions, tone));
+	function toggleTone(value) {
+		if (tone.includes(value)) {
+			if (tone.length > 1) tone = tone.filter(t => t !== value);
+		} else {
+			tone = [...tone, value];
+		}
+	}
+
 	const vocabularyLabel = $derived(getOptionLabel(vocabularyOptions, vocabularyLevel));
 	const translationTypeLabel = $derived(getOptionLabel(translationTypeOptions, translationType));
 	const fidelityLabel = $derived(getOptionLabel(fidelityOptions, fidelity));
@@ -61,7 +68,7 @@
 			project = data.project;
 			rules = data.rules;
 			if (rules) {
-				tone = rules.tone?.[0] || 'formal';
+				tone = rules.tone?.length > 0 ? [...rules.tone] : ['formal'];
 				vocabularyLevel = rules.vocabularyLevel || 'medium';
 				translationType = rules.translationType || 'balanced';
 				fidelity = rules.fidelity || 'medium';
@@ -89,7 +96,7 @@
 		saving = true;
 		await currentProjectStore.saveRules({
 			name: rules?.name || 'قوانین پروژه',
-			tone: [tone],
+			tone: tone.length > 0 ? [...tone] : ['formal'],
 			vocabularyLevel,
 			translationType,
 			fidelity,
@@ -108,7 +115,7 @@
 		if (name) {
 			await rulesService.savePreset({
 				name,
-				tone: [tone],
+				tone: tone.length > 0 ? [...tone] : ['formal'],
 				vocabularyLevel,
 				translationType,
 				fidelity,
@@ -122,7 +129,7 @@
 	async function loadPreset(presetId) {
 		const preset = presets.find(p => p.id === presetId);
 		if (preset) {
-			tone = preset.tone?.[0] || 'formal';
+			tone = preset.tone?.length > 0 ? [...preset.tone] : ['formal'];
 			vocabularyLevel = preset.vocabularyLevel || 'medium';
 			translationType = preset.translationType || 'balanced';
 			fidelity = preset.fidelity || 'medium';
@@ -225,19 +232,22 @@
 			<CardTitle>تنظیمات سبک</CardTitle>
 		</CardHeader>
 		<CardContent class="space-y-4">
-			<div class="grid grid-cols-2 gap-4">
-				<div class="space-y-2">
-					<Label>لحن</Label>
-					<Select.Root type="single" value={tone} onValueChange={(v) => tone = v || 'formal'}>
-						<Select.Trigger class="w-full">{toneLabel}</Select.Trigger>
-						<Select.Content>
-							{#each toneOptions as opt}
-								<Select.Item value={opt.value} label={opt.label}>{opt.label}</Select.Item>
-							{/each}
-						</Select.Content>
-					</Select.Root>
+			<div class="space-y-2 mb-4">
+				<Label>لحن (می‌توانید چند مورد انتخاب کنید)</Label>
+				<div class="flex flex-wrap gap-2">
+					{#each toneOptions as opt}
+						<button
+							type="button"
+							class="px-3 py-1.5 rounded-full text-sm border transition-colors {tone.includes(opt.value) ? 'bg-primary text-primary-foreground border-primary' : 'bg-muted hover:bg-muted/80 border-transparent'}"
+							onclick={() => toggleTone(opt.value)}
+						>
+							{opt.label}
+						</button>
+					{/each}
 				</div>
+			</div>
 
+			<div class="grid grid-cols-2 gap-4">
 				<div class="space-y-2">
 					<Label>سطح واژگان</Label>
 					<Select.Root type="single" value={vocabularyLevel} onValueChange={(v) => vocabularyLevel = v || 'medium'}>
