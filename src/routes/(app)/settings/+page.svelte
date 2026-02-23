@@ -11,7 +11,6 @@
 
 	let settings = $state(null);
 	let apiKey = $state('');
-	let uiLanguage = $state('fa');
 	let defaultSourceLanguage = $state('en');
 	let defaultTargetLanguage = $state('fa');
 	let testing = $state(false);
@@ -49,19 +48,12 @@
 
 	const languageItems = $derived([...defaultLanguageItems, ...customLanguageItems]);
 
-	const uiLanguageItems = [
-		{ value: 'fa', label: 'فارسی' },
-		{ value: 'en', label: 'English' }
-	];
-
-	const uiLangLabel = $derived(uiLanguageItems.find(l => l.value === uiLanguage)?.label ?? 'انتخاب زبان');
 	const sourceLangLabel = $derived(languageItems.find(l => l.value === defaultSourceLanguage)?.label ?? 'انتخاب زبان');
 	const targetLangLabel = $derived(languageItems.find(l => l.value === defaultTargetLanguage)?.label ?? 'انتخاب زبان');
 
 	onMount(async () => {
 		settings = await settingsStore.load();
 		apiKey = settings?.openRouterApiKey || '';
-		uiLanguage = settings?.uiLanguage || 'fa';
 		defaultSourceLanguage = settings?.defaultSourceLanguage || 'en';
 		defaultTargetLanguage = settings?.defaultTargetLanguage || 'fa';
 		customLanguageItems = settings?.customLanguages || [];
@@ -120,7 +112,6 @@
 		await settingsStore.save({
 			...settings,
 			openRouterApiKey: apiKey,
-			uiLanguage,
 			defaultSourceLanguage,
 			defaultTargetLanguage,
 			customLanguages: customLanguageItems
@@ -132,7 +123,6 @@
 		savingLang = true;
 		await settingsStore.save({
 			...settings,
-			uiLanguage,
 			defaultSourceLanguage,
 			defaultTargetLanguage,
 			customLanguages: customLanguageItems
@@ -385,32 +375,6 @@
 						مشاهده تاریخچه محلی
 					</Button>
 				{/if}
-			</CardContent>
-		</Card>
-
-		<Card>
-			<CardHeader>
-				<CardTitle>زبان رابط کاربری</CardTitle>
-			</CardHeader>
-			<CardContent class="space-y-4">
-				<Select.Root type="single" bind:value={uiLanguage}>
-					<Select.Trigger class="w-full">
-						{uiLangLabel}
-					</Select.Trigger>
-					<Select.Content>
-						{#each uiLanguageItems as item (item.value)}
-							<Select.Item value={item.value} label={item.label}>{item.label}</Select.Item>
-						{/each}
-					</Select.Content>
-				</Select.Root>
-				<div class="flex items-center gap-3">
-					<Button onclick={saveLanguageSettings} disabled={savingLang}>
-						{savingLang ? 'در حال ذخیره...' : 'ذخیره تنظیمات زبان'}
-					</Button>
-					{#if langSaved}
-						<span class="text-sm text-green-600">✓ ذخیره شد</span>
-					{/if}
-				</div>
 			</CardContent>
 		</Card>
 

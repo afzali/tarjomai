@@ -32,7 +32,7 @@
 	<meta name="description" content="ابزار ترجمه و مقایسه هوشمند متون با هوش مصنوعی" />
 </svelte:head>
 
-<RtlProvider rtl={settings?.uiLanguage === 'fa'} lang={settings?.uiLanguage || 'fa'}>
+<RtlProvider rtl={true} lang="fa">
 	{#if initialized}
 		{@render children?.()}
 	{:else}

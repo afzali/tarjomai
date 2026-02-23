@@ -1,5 +1,6 @@
 <script>
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 	import { projectsStore } from '$lib/stores/projects.store.js';
 	import { settingsStore } from '$lib/stores/settings.store.js';
 	import { Button } from '$lib/components/ui-rtl/button';
@@ -16,16 +17,32 @@
 	let setupType = $state('guided');
 	let creating = $state(false);
 
-	const languageItems = [
+	const defaultLanguageItems = [
 		{ value: 'en', label: 'انگلیسی' },
 		{ value: 'fa', label: 'فارسی' },
 		{ value: 'ar', label: 'عربی' },
 		{ value: 'de', label: 'آلمانی' },
-		{ value: 'fr', label: 'فرانسوی' }
+		{ value: 'fr', label: 'فرانسوی' },
+		{ value: 'es', label: 'اسپانیایی' },
+		{ value: 'it', label: 'ایتالیایی' },
+		{ value: 'ru', label: 'روسی' },
+		{ value: 'zh', label: 'چینی' },
+		{ value: 'ja', label: 'ژاپنی' },
+		{ value: 'tr', label: 'ترکی' }
 	];
+
+	let customLanguageItems = $state([]);
+	const languageItems = $derived([...defaultLanguageItems, ...customLanguageItems]);
 
 	const sourceLabel = $derived(languageItems.find(l => l.value === sourceLanguage)?.label ?? 'انتخاب زبان');
 	const targetLabel = $derived(languageItems.find(l => l.value === targetLanguage)?.label ?? 'انتخاب زبان');
+
+	onMount(async () => {
+		const settings = await settingsStore.load();
+		if (settings?.defaultSourceLanguage) sourceLanguage = settings.defaultSourceLanguage;
+		if (settings?.defaultTargetLanguage) targetLanguage = settings.defaultTargetLanguage;
+		if (settings?.customLanguages?.length) customLanguageItems = settings.customLanguages;
+	});
 
 	async function createProject() {
 		if (!title.trim()) return;
