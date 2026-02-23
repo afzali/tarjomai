@@ -93,34 +93,61 @@ export const projectsService = {
     const project = await this.getProject(id);
     const chapters = await db.chapters.where('projectId').equals(id).toArray();
     const rules = await db.translationRules.where('projectId').equals(id).first();
-    
+
+    // Collect reviewMessages for all chapters
+    const chapterIds = chapters.map(c => c.id);
+    const reviewMessages = chapterIds.length > 0
+      ? await db.reviewMessages.where('chapterId').anyOf(chapterIds).toArray()
+      : [];
+
     return {
-      version: '1.0',
+      version: '2.0',
       exportedAt: new Date().toISOString(),
       project,
       chapters,
-      translationRules: rules
+      translationRules: rules,
+      reviewMessages
     };
   },
 
-  async importProject(data) {
-    const { project, chapters, translationRules } = data;
-    
-    const newProject = await this.createProject({
-      title: project.title + ' (imported)',
-      description: project.description,
-      sourceLanguage: project.sourceLanguage,
-      targetLanguage: project.targetLanguage,
-      defaultModel: project.defaultModel
-    });
+  async exportProjects(ids) {
+    const items = [];
+    for (const id of ids) {
+      items.push(await this.exportProject(id));
+    }
+    return {
+      version: '2.0',
+      exportedAt: new Date().toISOString(),
+      projects: items
+    };
+  },
+
+  async importProject(data, addSuffix = true) {
+    const { project, chapters, translationRules, reviewMessages } = data;
+
+    const now = new Date().toISOString();
+    const projectData = {
+      ...project,
+      id: undefined,
+      title: addSuffix ? project.title + ' (وارد شده)' : project.title,
+      createdAt: now,
+      updatedAt: now
+    };
+    const id = await db.projects.add(projectData);
+    const newProject = { ...projectData, id };
+
+    // Map old chapter ids to new ones for reviewMessages
+    const chapterIdMap = {};
 
     if (chapters && chapters.length > 0) {
       for (const chapter of chapters) {
-        await db.chapters.add({
+        const oldId = chapter.id;
+        const newId = await db.chapters.add({
           ...chapter,
           id: undefined,
           projectId: newProject.id
         });
+        chapterIdMap[oldId] = newId;
       }
     }
 
@@ -132,7 +159,29 @@ export const projectsService = {
       });
     }
 
+    if (reviewMessages && reviewMessages.length > 0) {
+      for (const msg of reviewMessages) {
+        const newChapterId = chapterIdMap[msg.chapterId];
+        if (newChapterId) {
+          await db.reviewMessages.add({
+            ...msg,
+            id: undefined,
+            chapterId: newChapterId
+          });
+        }
+      }
+    }
+
     return newProject;
+  },
+
+  async importProjects(data) {
+    const items = data.projects || [data];
+    const imported = [];
+    for (const item of items) {
+      imported.push(await this.importProject(item, true));
+    }
+    return imported;
   }
 };
 
