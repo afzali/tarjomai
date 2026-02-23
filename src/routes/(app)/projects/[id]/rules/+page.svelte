@@ -11,9 +11,10 @@
 	import { Textarea } from '$lib/components/ui-rtl/textarea';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui-rtl/card';
 	import * as Select from '$lib/components/ui-rtl/select';
-	import { allModels as fallbackModels } from '$lib/models.js';
+	import { allModels as fallbackModels, getModelName } from '$lib/models.js';
 	import { fetchModels } from '$lib/stores/models.store.js';
 	import { settingsStore } from '$lib/stores/settings.store.js';
+	import { toneOptions, vocabularyOptions, translationTypeOptions, fidelityOptions, getOptionLabel } from '$lib/translationOptions.js';
 
 	let projectId = $derived($page.params.id);
 	let project = $state(null);
@@ -49,37 +50,10 @@
 	let customRules = $state('');
 	let systemPrompt = $state('');
 
-	const toneOptions = [
-		{ value: 'formal', label: 'رسمی' },
-		{ value: 'informal', label: 'غیررسمی' },
-		{ value: 'literary', label: 'ادبی' },
-		{ value: 'scientific', label: 'علمی' },
-		{ value: 'conversational', label: 'محاوره‌ای' }
-	];
-
-	const vocabularyOptions = [
-		{ value: 'simple', label: 'ساده' },
-		{ value: 'medium', label: 'متوسط' },
-		{ value: 'advanced', label: 'پیشرفته' }
-	];
-
-	const translationTypeOptions = [
-		{ value: 'literal', label: 'تحت‌اللفظی' },
-		{ value: 'balanced', label: 'متعادل' },
-		{ value: 'free', label: 'آزاد' }
-	];
-
-	const fidelityOptions = [
-		{ value: 'low', label: 'کم' },
-		{ value: 'medium', label: 'متوسط' },
-		{ value: 'high', label: 'زیاد' },
-		{ value: 'literal', label: 'تحت‌اللفظی' }
-	];
-
-	const toneLabel = $derived(toneOptions.find(t => t.value === tone)?.label ?? 'انتخاب');
-	const vocabularyLabel = $derived(vocabularyOptions.find(v => v.value === vocabularyLevel)?.label ?? 'انتخاب');
-	const translationTypeLabel = $derived(translationTypeOptions.find(t => t.value === translationType)?.label ?? 'انتخاب');
-	const fidelityLabel = $derived(fidelityOptions.find(f => f.value === fidelity)?.label ?? 'انتخاب');
+	const toneLabel = $derived(getOptionLabel(toneOptions, tone));
+	const vocabularyLabel = $derived(getOptionLabel(vocabularyOptions, vocabularyLevel));
+	const translationTypeLabel = $derived(getOptionLabel(translationTypeOptions, translationType));
+	const fidelityLabel = $derived(getOptionLabel(fidelityOptions, fidelity));
 
 	onMount(async () => {
 		const data = await currentProjectStore.load(parseInt(projectId));

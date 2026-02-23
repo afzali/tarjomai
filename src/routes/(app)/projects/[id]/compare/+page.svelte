@@ -163,7 +163,8 @@ Provide only the translation, no explanations.`;
 			const result = await openrouterService.sendMessage(
 				settings.openRouterApiKey,
 				modelId,
-				[{ role: 'user', content: prompt }]
+				[{ role: 'user', content: prompt }],
+				{ temperature: 0, seed: 42, top_p: 1 }
 			);
 			return {
 				modelId,

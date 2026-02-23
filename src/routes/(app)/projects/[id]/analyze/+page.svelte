@@ -14,6 +14,7 @@
 	import { Checkbox } from '$lib/components/ui-rtl/checkbox';
 	import * as Select from '$lib/components/ui-rtl/select';
 	import * as Tabs from '$lib/components/ui-rtl/tabs';
+	import { toneOptions, vocabularyOptions, translationTypeOptions, structureOptions, getOptionLabel } from '$lib/translationOptions.js';
 
 	let projectId = $derived($page.params.id);
 	let project = $state(null);
@@ -37,36 +38,9 @@
 	let editableTranslationType = $state('balanced');
 	let editableCustomRules = $state('');
 
-	const toneOptions = [
-		{ value: 'formal', label: 'رسمی' },
-		{ value: 'informal', label: 'غیررسمی' },
-		{ value: 'literary', label: 'ادبی' },
-		{ value: 'scientific', label: 'علمی' },
-		{ value: 'conversational', label: 'محاوره‌ای' }
-	];
-
-	const vocabularyOptions = [
-		{ value: 'simple', label: 'ساده' },
-		{ value: 'medium', label: 'متوسط' },
-		{ value: 'advanced', label: 'پیشرفته' }
-	];
-
-	const structureOptions = [
-		{ value: 'short', label: 'کوتاه' },
-		{ value: 'medium', label: 'متوسط' },
-		{ value: 'long', label: 'بلند' },
-		{ value: 'mixed', label: 'ترکیبی' }
-	];
-
-	const translationTypeOptions = [
-		{ value: 'literal', label: 'تحت‌اللفظی' },
-		{ value: 'balanced', label: 'متعادل' },
-		{ value: 'free', label: 'آزاد' }
-	];
-
-	const vocabularyLabel = $derived(vocabularyOptions.find(v => v.value === editableVocabulary)?.label ?? 'انتخاب');
-	const structureLabel = $derived(structureOptions.find(s => s.value === editableStructure)?.label ?? 'انتخاب');
-	const translationTypeLabel = $derived(translationTypeOptions.find(t => t.value === editableTranslationType)?.label ?? 'انتخاب');
+	const vocabularyLabel = $derived(getOptionLabel(vocabularyOptions, editableVocabulary));
+	const structureLabel = $derived(getOptionLabel(structureOptions, editableStructure));
+	const translationTypeLabel = $derived(getOptionLabel(translationTypeOptions, editableTranslationType));
 
 	onMount(async () => {
 		const data = await currentProjectStore.load(parseInt(projectId));
@@ -115,7 +89,7 @@
 		analysisResult = null;
 
 		const prompt = `Analyze the writing style of the following text and provide a JSON response with these fields:
-- tone: array of tones (formal, informal, literary, scientific, conversational)
+- tone: array of tones (formal, informal, literary, scientific, conversational, religious)
 - vocabularyLevel: string (simple, medium, advanced)
 - sentenceStructure: string (short, medium, long, mixed)
 - fidelity: string (low, medium, high, literal)
@@ -130,7 +104,8 @@ Respond ONLY with valid JSON.`;
 		const result = await openrouterService.sendMessage(
 			settings.openRouterApiKey,
 			settings.defaultModels?.styleAnalysis || 'anthropic/claude-sonnet-4',
-			[{ role: 'user', content: prompt }]
+			[{ role: 'user', content: prompt }],
+			{ temperature: 0, seed: 42, top_p: 1 }
 		);
 
 		if (result.success) {

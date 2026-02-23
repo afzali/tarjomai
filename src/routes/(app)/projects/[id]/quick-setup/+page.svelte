@@ -13,6 +13,7 @@
 	import { allModels as fallbackModels, modelsToSelectItems } from '$lib/models.js';
 	import { fetchModels } from '$lib/stores/models.store.js';
 	import { settingsStore } from '$lib/stores/settings.store.js';
+	import { toneOptions, vocabularyOptions, translationTypeOptions, getOptionLabel } from '$lib/translationOptions.js';
 
 	let projectId = $derived($page.params.id);
 	let project = $state(null);
@@ -42,30 +43,10 @@
 
 	const models = $derived(modelsToSelectItems(filteredModels));
 
-	const toneItems = [
-		{ value: 'formal', label: 'رسمی' },
-		{ value: 'informal', label: 'غیررسمی' },
-		{ value: 'literary', label: 'ادبی' },
-		{ value: 'scientific', label: 'علمی' },
-		{ value: 'conversational', label: 'محاوره‌ای' }
-	];
-
-	const vocabularyItems = [
-		{ value: 'simple', label: 'ساده' },
-		{ value: 'medium', label: 'متوسط' },
-		{ value: 'advanced', label: 'پیشرفته' }
-	];
-
-	const translationTypeItems = [
-		{ value: 'literal', label: 'تحت‌اللفظی' },
-		{ value: 'balanced', label: 'متعادل' },
-		{ value: 'free', label: 'آزاد' }
-	];
-
 	const modelLabel = $derived(availableModels.find(m => m.id === selectedModel)?.name ?? 'انتخاب مدل');
-	const toneLabel = $derived(toneItems.find(t => t.value === tone)?.label ?? 'انتخاب لحن');
-	const vocabularyLabel = $derived(vocabularyItems.find(v => v.value === vocabularyLevel)?.label ?? 'انتخاب سطح');
-	const translationTypeLabel = $derived(translationTypeItems.find(t => t.value === translationType)?.label ?? 'انتخاب نوع');
+	const toneLabel = $derived(getOptionLabel(toneOptions, tone));
+	const vocabularyLabel = $derived(getOptionLabel(vocabularyOptions, vocabularyLevel));
+	const translationTypeLabel = $derived(getOptionLabel(translationTypeOptions, translationType));
 
 	onMount(async () => {
 		const data = await currentProjectStore.load(parseInt(projectId));
@@ -164,7 +145,7 @@
 						{toneLabel}
 					</Select.Trigger>
 					<Select.Content>
-						{#each toneItems as item (item.value)}
+						{#each toneOptions as item (item.value)}
 							<Select.Item value={item.value} label={item.label}>{item.label}</Select.Item>
 						{/each}
 					</Select.Content>
@@ -178,7 +159,7 @@
 						{vocabularyLabel}
 					</Select.Trigger>
 					<Select.Content>
-						{#each vocabularyItems as item (item.value)}
+						{#each vocabularyOptions as item (item.value)}
 							<Select.Item value={item.value} label={item.label}>{item.label}</Select.Item>
 						{/each}
 					</Select.Content>
@@ -192,7 +173,7 @@
 						{translationTypeLabel}
 					</Select.Trigger>
 					<Select.Content>
-						{#each translationTypeItems as item (item.value)}
+						{#each translationTypeOptions as item (item.value)}
 							<Select.Item value={item.value} label={item.label}>{item.label}</Select.Item>
 						{/each}
 					</Select.Content>

@@ -300,7 +300,7 @@ IMPORTANT OUTPUT RULES:
 						{ role: 'system', content: prompt.system },
 						{ role: 'user', content: `Translate this sentence:\n\n${prompt.user}` }
 					],
-					{ projectId: project?.id }
+					{ projectId: project?.id, temperature: 0, seed: 42, top_p: 1 }
 				);
 				
 				if (result.success && result.content?.trim()) {
