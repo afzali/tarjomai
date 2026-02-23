@@ -144,26 +144,45 @@ Respond in JSON format:
 		// Save sample text
 		await projectsService.saveWizardStepData(parseInt(projectId), 'compare', { sampleText });
 
-		const rulesPrompt = rules ? `
-Translation rules:
-- Tone: ${rules.tone?.join(', ') || 'balanced'}
-- Vocabulary Level: ${rules.vocabularyLevel || 'medium'}
-- Translation Type: ${rules.translationType || 'balanced'}
-${rules.customRules?.length > 0 ? `- Custom Rules: ${rules.customRules.join('; ')}` : ''}
-` : '';
-
-		const prompt = `Translate the following text from ${project?.sourceLanguage || 'English'} to ${project?.targetLanguage || 'Persian'}.
-${rulesPrompt}
-Text to translate:
-${sampleText}
-
-Provide only the translation, no explanations.`;
+		// Build system prompt identical to main translation page (buildTranslationPrompt)
+		const sourceLanguage = project?.sourceLanguage || 'English';
+		const targetLanguage = project?.targetLanguage || 'Persian';
+		
+		let systemPrompt = `You are a professional translator. Translate the following text from ${sourceLanguage} to ${targetLanguage}.
+IMPORTANT OUTPUT RULES:
+1. Output ONLY the translation.
+2. Do NOT include "Translation:" or any other prefix/suffix.
+3. Do NOT include notes or explanations.
+4. Maintain the original tone and style.`;
+		
+		if (rules) {
+			if (rules.tone?.length > 0) {
+				systemPrompt += `\nTone: ${rules.tone.join(', ')}`;
+			}
+			if (rules.vocabularyLevel) {
+				systemPrompt += `\nVocabulary level: ${rules.vocabularyLevel}`;
+			}
+			if (rules.translationType) {
+				systemPrompt += `\nTranslation type: ${rules.translationType}`;
+			}
+			if (rules.customRules?.length > 0) {
+				systemPrompt += `\nCustom rules:\n${rules.customRules.map(r => `- ${r}`).join('\n')}`;
+			}
+			if (rules.systemPrompt) {
+				systemPrompt += `\n\nAdditional instructions: ${rules.systemPrompt}`;
+			}
+		}
+		
+		systemPrompt += `\n\nIMPORTANT: Translate paragraph by paragraph. Keep the same paragraph structure. Do not add or remove paragraphs.`;
 
 		const promises = selectedModels.map(async (modelId) => {
 			const result = await openrouterService.sendMessage(
 				settings.openRouterApiKey,
 				modelId,
-				[{ role: 'user', content: prompt }],
+				[
+					{ role: 'system', content: systemPrompt },
+					{ role: 'user', content: `Translate this sentence:\n\n${sampleText}` }
+				],
 				{ temperature: 0, seed: 42, top_p: 1 }
 			);
 			return {

@@ -1,15 +1,20 @@
 <script>
 	import { page } from '$app/stores';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { currentProjectStore } from '$lib/stores/currentProject.store.js';
 	import projectsService from '$lib/services/projects.service.js';
 	import { settingsStore } from '$lib/stores/settings.store.js';
 	import { openrouterService } from '$lib/services/openrouter.service.js';
+	import { reviewService } from '$lib/services/review.service.js';
 	import { Button } from '$lib/components/ui-rtl/button';
 	import { Input } from '$lib/components/ui-rtl/input';
 	import { Label } from '$lib/components/ui-rtl/label';
+	import { Textarea } from '$lib/components/ui-rtl/textarea';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui-rtl/card';
 	import * as Dialog from '$lib/components/ui-rtl/dialog';
+	import * as Select from '$lib/components/ui-rtl/select';
+	import { allModels, getModelName } from '$lib/models.js';
+	import { marked } from 'marked';
 
 	let projectId = $derived($page.params.id);
 	let project = $state(null);
@@ -35,6 +40,8 @@
 	);
 
 	let hoveredSentenceIndex = $state(-1);
+	let editingSource = $state(false);
+	let editingTranslation = $state(false);
 	let editMode = $state(false);
 	let failedSentenceIndices = $state([]);
 	let currentTranslatingIndex = $state(-1);
@@ -49,6 +56,36 @@
 	// Translation progress tracking
 	let startTime = $state(0);
 	let estimatedTimeRemaining = $state(0);
+
+	// Review (chat-like) state
+	let reviewMessages = $state([]);
+	let reviewInput = $state('');
+	let reviewing = $state(false);
+	let reviewOpen = $state(false);
+	let reviewModel = $state('anthropic/claude-sonnet-4');
+	let showReviewPromptEditor = $state(false);
+	let reviewChatEl = $state(null);
+
+	function getDefaultReviewPrompt() {
+		const srcLang = project?.sourceLanguage || 'English';
+		const tgtLang = project?.targetLanguage || 'Persian';
+		return `تو یک مترجم و ویراستار حاذق از ${srcLang} به ${tgtLang} هستی.
+متن اصلی و ترجمه یک فصل از کتاب به تو داده می‌شود.
+وظیفه تو:
+1. ترجمه را با متن اصلی مقایسه کن
+2. خطاهای ترجمه، بدترجمه‌ها، حذفیات و اضافات را مشخص کن
+3. پیشنهادات مشخص برای بهبود ترجمه بده
+4. اگر اصطلاحات تخصصی بهتری وجود دارد پیشنهاد بده
+5. پاسخ را به فارسی بنویس و مختصر و کاربردی باش`;
+	}
+
+	let reviewSystemPrompt = $state('');
+	// Initialize prompt when project loads
+	$effect(() => {
+		if (project && !reviewSystemPrompt) {
+			reviewSystemPrompt = getDefaultReviewPrompt();
+		}
+	});
 
 	// Check if setup is incomplete
 	const isSetupIncomplete = $derived(
@@ -87,6 +124,7 @@
 				selectedChapter = chapters[0];
 				lastSavedSourceText = chapters[0].sourceText || '';
 				lastTranslatedSourceText = chapters[0].sourceText || '';
+				reviewMessages = await reviewService.getMessages(chapters[0].id);
 			}
 		}
 		settings = await settingsStore.load();
@@ -174,12 +212,15 @@
 		}
 	}
 
-	function doSelectChapter(chapter) {
+	async function doSelectChapter(chapter) {
 		selectedChapter = chapter;
 		lastSavedSourceText = chapter.sourceText || '';
 		lastTranslatedSourceText = chapter.sourceText || '';
 		editMode = false;
+		editingSource = false;
+		editingTranslation = false;
 		hasUnsavedChanges = false;
+		reviewMessages = await reviewService.getMessages(chapter.id);
 	}
 
 	function confirmLeaveWithoutSaving() {
@@ -439,6 +480,113 @@ IMPORTANT OUTPUT RULES:
 		URL.revokeObjectURL(url);
 		showExportModal = false;
 	}
+
+	// ── Review Functions ──
+
+	async function scrollReviewToBottom() {
+		await tick();
+		if (reviewChatEl) {
+			reviewChatEl.scrollTop = reviewChatEl.scrollHeight;
+		}
+	}
+
+	async function startReview() {
+		if (!selectedChapter || !settings?.openRouterApiKey) return;
+		if (!selectedChapter.sourceText?.trim() && !selectedChapter.translatedText?.trim()) return;
+
+		reviewing = true;
+		reviewOpen = true;
+
+		const sourceText = selectedChapter.sourceText || '(بدون متن اصلی)';
+		const translatedText = selectedChapter.translatedText || '(بدون ترجمه)';
+
+		const userContent = `لطفاً این فصل را بررسی کن:\n\n**متن اصلی:**\n${sourceText}\n\n**ترجمه:**\n${translatedText}`;
+
+		// Save user message
+		const userMsg = await reviewService.addMessage(selectedChapter.id, 'user', userContent);
+		reviewMessages = [...reviewMessages, userMsg];
+		await scrollReviewToBottom();
+
+		// Build messages for API
+		const apiMessages = [
+			{ role: 'system', content: reviewSystemPrompt },
+			{ role: 'user', content: userContent }
+		];
+
+		const result = await openrouterService.sendMessage(
+			settings.openRouterApiKey,
+			reviewModel,
+			apiMessages,
+			{ projectId: project?.id }
+		);
+
+		if (result.success) {
+			const assistantMsg = await reviewService.addMessage(selectedChapter.id, 'assistant', result.content, reviewModel);
+			reviewMessages = [...reviewMessages, assistantMsg];
+		} else {
+			const errorMsg = await reviewService.addMessage(selectedChapter.id, 'assistant', `❌ خطا: ${result.error}`);
+			reviewMessages = [...reviewMessages, errorMsg];
+		}
+
+		await scrollReviewToBottom();
+		reviewing = false;
+	}
+
+	async function sendReviewMessage() {
+		if (!reviewInput.trim() || !selectedChapter || !settings?.openRouterApiKey) return;
+		if (reviewing) return;
+
+		reviewing = true;
+		const userContent = reviewInput.trim();
+		reviewInput = '';
+
+		const userMsg = await reviewService.addMessage(selectedChapter.id, 'user', userContent);
+		reviewMessages = [...reviewMessages, userMsg];
+		await scrollReviewToBottom();
+
+		// Build full conversation history for context
+		const apiMessages = [
+			{ role: 'system', content: reviewSystemPrompt },
+			...reviewMessages.map(m => ({ role: m.role, content: m.content }))
+		];
+
+		const result = await openrouterService.sendMessage(
+			settings.openRouterApiKey,
+			reviewModel,
+			apiMessages,
+			{ projectId: project?.id }
+		);
+
+		if (result.success) {
+			const assistantMsg = await reviewService.addMessage(selectedChapter.id, 'assistant', result.content, reviewModel);
+			reviewMessages = [...reviewMessages, assistantMsg];
+		} else {
+			const errorMsg = await reviewService.addMessage(selectedChapter.id, 'assistant', `❌ خطا: ${result.error}`);
+			reviewMessages = [...reviewMessages, errorMsg];
+		}
+
+		await scrollReviewToBottom();
+		reviewing = false;
+	}
+
+	async function clearReview() {
+		if (!selectedChapter) return;
+		await reviewService.clearMessages(selectedChapter.id);
+		reviewMessages = [];
+	}
+
+	// Configure marked for safe rendering
+	marked.setOptions({ breaks: true, gfm: true });
+
+	function renderMarkdown(text) {
+		try {
+			return marked.parse(text);
+		} catch {
+			return text;
+		}
+	}
+
+	const reviewModelName = $derived(getModelName(reviewModel));
 </script>
 
 <div class="flex h-screen">
@@ -575,110 +723,247 @@ IMPORTANT OUTPUT RULES:
 					</div>
 				{/if}
 
-				<div class="flex-1 grid grid-cols-2 gap-0 overflow-hidden">
-					<!-- Source Text Panel -->
-					<div class="border-l flex flex-col overflow-hidden">
-						<div class="p-3 border-b bg-muted/30 flex items-center justify-between">
-							<h3 class="font-medium text-sm">متن اصلی ({project.sourceLanguage})</h3>
-							{#if !editMode && sourceSentences.length > 0}
-								<button 
-									class="text-xs px-2 py-1 rounded bg-muted hover:bg-muted/80 transition-colors"
-									onclick={() => editMode = true}
-								>
-									✏️ ویرایش
-								</button>
-							{:else if editMode}
-								<button 
-									class="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-									onclick={() => { editMode = false; saveChapter(); }}
-								>
-									✓ تأیید
-								</button>
-							{/if}
-						</div>
-						<div class="flex-1 overflow-auto p-4">
-							{#if editMode || sourceSentences.length === 0}
-								<!-- Edit mode: full textarea -->
-								<textarea
-									bind:value={selectedChapter.sourceText}
-									class="w-full h-full min-h-[300px] resize-none border rounded-lg p-4 bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 leading-relaxed text-base"
-									placeholder="متن اصلی را اینجا وارد کنید..."
-									dir="auto"
-								></textarea>
-							{:else}
-								<!-- View mode: Sentence-aligned view like Google Translate -->
-								<div class="leading-relaxed text-base" dir="auto">
-									{#each sourceSentences as sentence, index}
-										{@const isTranslating = translating && currentTranslatingIndex === index}
-										{@const isFailed = failedSentenceIndices.includes(index)}
-										<span 
-											id="source-sentence-{index}"
-											class="inline transition-colors rounded px-0.5 {
-												isTranslating ? 'bg-blue-100 dark:bg-blue-900/50 animate-pulse ring-2 ring-blue-400' :
-												isFailed ? 'bg-red-100 dark:bg-red-900/30' :
-												hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'
-											}"
-											onmouseenter={() => hoveredSentenceIndex = index}
-											onmouseleave={() => hoveredSentenceIndex = -1}
-											role="button"
-											tabindex="0"
-										>{sentence}{index < sourceSentences.length - 1 ? ' ' : ''}</span>
-									{/each}
+				<div class="flex-1 flex flex-col overflow-hidden">
+					<!-- Source + Translation panels -->
+					<div class="grid grid-cols-2 gap-0" style="min-height: 300px; flex: 1 1 auto; overflow: hidden;">
+						<!-- Source Text Panel -->
+						<div class="border-l flex flex-col overflow-hidden">
+							<div class="p-3 border-b bg-muted/30 flex items-center justify-between">
+								<h3 class="font-medium text-sm">متن اصلی ({project.sourceLanguage})</h3>
+								<div class="flex items-center gap-1">
+									{#if !editingSource && sourceSentences.length > 0}
+										<button 
+											class="text-xs px-2 py-1 rounded bg-muted hover:bg-muted/80 transition-colors"
+											onclick={() => { editingSource = true; editMode = true; }}
+										>
+											✏️ ویرایش
+										</button>
+									{:else if editingSource}
+										<button 
+											class="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+											onclick={() => { editingSource = false; if (!editingTranslation) editMode = false; saveChapter(); }}
+										>
+											✓ تأیید
+										</button>
+									{/if}
 								</div>
-							{/if}
+							</div>
+							<div class="flex-1 overflow-auto p-4">
+								{#if editingSource || sourceSentences.length === 0}
+									<textarea
+										bind:value={selectedChapter.sourceText}
+										class="w-full h-full min-h-[300px] resize-none border rounded-lg p-4 bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 leading-relaxed text-base"
+										placeholder="متن اصلی را اینجا وارد کنید..."
+										dir="auto"
+									></textarea>
+								{:else}
+									<div class="leading-relaxed text-base" dir="auto">
+										{#each sourceSentences as sentence, index}
+											{@const isTranslating = translating && currentTranslatingIndex === index}
+											{@const isFailed = failedSentenceIndices.includes(index)}
+											<span 
+												id="source-sentence-{index}"
+												class="inline transition-colors rounded px-0.5 {
+													isTranslating ? 'bg-blue-100 dark:bg-blue-900/50 animate-pulse ring-2 ring-blue-400' :
+													isFailed ? 'bg-red-100 dark:bg-red-900/30' :
+													hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'
+												}"
+												onmouseenter={() => hoveredSentenceIndex = index}
+												onmouseleave={() => hoveredSentenceIndex = -1}
+												role="button"
+												tabindex="0"
+											>{sentence}{index < sourceSentences.length - 1 ? ' ' : ''}</span>
+										{/each}
+									</div>
+								{/if}
+							</div>
+						</div>
+
+						<!-- Translated Text Panel -->
+						<div class="flex flex-col overflow-hidden">
+							<div class="p-3 border-b bg-muted/30 flex items-center justify-between">
+								<h3 class="font-medium text-sm">ترجمه ({project.targetLanguage})</h3>
+								<div class="flex items-center gap-1">
+									{#if !editingTranslation && selectedChapter.translatedText?.trim()}
+										<button 
+											class="text-xs px-2 py-1 rounded bg-muted hover:bg-muted/80 transition-colors"
+											onclick={() => { editingTranslation = true; editMode = true; }}
+										>
+											✏️ ویرایش
+										</button>
+									{:else if editingTranslation}
+										<button 
+											class="text-xs px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+											onclick={() => { editingTranslation = false; if (!editingSource) editMode = false; saveChapter(); }}
+										>
+											✓ تأیید
+										</button>
+									{/if}
+								</div>
+							</div>
+							<div class="flex-1 overflow-auto p-4">
+								{#if editingTranslation}
+									<textarea
+										bind:value={selectedChapter.translatedText}
+										class="w-full h-full min-h-[300px] resize-none border rounded-lg p-4 bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 leading-relaxed text-base"
+										placeholder="متن ترجمه را ویرایش کنید..."
+										dir="auto"
+									></textarea>
+								{:else}
+									<div class="leading-relaxed text-base" dir="auto">
+										{#each translatedSentences as sentence, index}
+											{@const isFailed = failedSentenceIndices.includes(index)}
+											{@const isTranslating = translating && currentTranslatingIndex === index}
+											<span 
+												class="inline transition-colors rounded px-0.5 {
+													isFailed ? 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700' :
+													isTranslating ? 'bg-blue-100 dark:bg-blue-900/50 animate-pulse' :
+													hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'
+												}"
+												onmouseenter={() => hoveredSentenceIndex = index}
+												onmouseleave={() => hoveredSentenceIndex = -1}
+												role="button"
+												tabindex="0"
+												title={isFailed ? 'این جمله ترجمه نشد - کلیک کنید برای ترجمه مجدد' : ''}
+											>{sentence}{index < translatedSentences.length - 1 ? ' ' : ''}</span>
+										{/each}
+										{#if translatedSentences.length === 0 && !translating}
+											<div class="h-full flex items-center justify-center text-muted-foreground min-h-[200px]">
+												{#if selectedChapter.sourceText?.trim()}
+													<p>برای شروع ترجمه، دکمه "ترجمه این فصل" را بزنید</p>
+												{:else}
+													<p>ابتدا متن اصلی را وارد کنید</p>
+												{/if}
+											</div>
+										{/if}
+										{#if translating && translatedSentences.length === 0}
+											<div class="h-full flex items-center justify-center text-muted-foreground min-h-[200px]">
+												<div class="flex items-center gap-2">
+													<div class="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+													<p>در حال ترجمه جمله اول...</p>
+												</div>
+											</div>
+										{/if}
+									</div>
+								{/if}
+							</div>
 						</div>
 					</div>
 
-					<!-- Translated Text Panel -->
-					<div class="flex flex-col overflow-hidden">
-						<div class="p-3 border-b bg-muted/30">
-							<h3 class="font-medium text-sm">ترجمه ({project.targetLanguage})</h3>
+					<!-- Review Section (full-width below both panels) -->
+					<div class="border-t flex flex-col" style="min-height: 48px; {reviewOpen ? 'flex: 0 0 auto; max-height: 50vh;' : ''}">
+						<!-- Review Header / Toggle Bar -->
+						<div class="p-3 bg-muted/20 flex items-center justify-between cursor-pointer select-none border-b" onclick={() => reviewOpen = !reviewOpen} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && (reviewOpen = !reviewOpen)}>
+							<div class="flex items-center gap-2">
+								<span class="text-sm font-medium">📝 بررسی و ریویو</span>
+								{#if reviewMessages.length > 0}
+									<span class="text-xs px-1.5 py-0.5 bg-primary/10 text-primary rounded-full">{reviewMessages.length}</span>
+								{/if}
+							</div>
+							<div class="flex items-center gap-2">
+								{#if !reviewOpen}
+									<Button size="sm" variant="outline" onclick={(e) => { e.stopPropagation(); reviewOpen = true; }} class="text-xs h-7">
+										باز کردن
+									</Button>
+								{/if}
+								<span class="text-muted-foreground text-xs">{reviewOpen ? '▼' : '▲'}</span>
+							</div>
 						</div>
-						<div class="flex-1 overflow-auto p-4">
-							{#if editMode}
-								<!-- Edit mode: show plain text -->
-								<div class="leading-relaxed text-base text-muted-foreground" dir="auto">
-									{selectedChapter.translatedText || 'ترجمه‌ای وجود ندارد'}
+
+						{#if reviewOpen}
+							<!-- Review Controls -->
+							<div class="p-3 border-b bg-muted/10 flex flex-wrap items-center gap-3">
+								<div class="flex items-center gap-2">
+									<Label class="text-xs whitespace-nowrap">مدل:</Label>
+									<Select.Root type="single" value={reviewModel} onValueChange={(v) => reviewModel = v}>
+										<Select.Trigger class="h-8 text-xs min-w-[180px]">
+											{reviewModelName}
+										</Select.Trigger>
+										<Select.Content>
+											{#each allModels as model}
+												<Select.Item value={model.id} label={model.name}>{model.name}</Select.Item>
+											{/each}
+										</Select.Content>
+									</Select.Root>
 								</div>
-							{:else}
-								<!-- View mode: Sentence-aligned view like Google Translate -->
-								<div class="leading-relaxed text-base" dir="auto">
-									{#each translatedSentences as sentence, index}
-										{@const isFailed = failedSentenceIndices.includes(index)}
-										{@const isTranslating = translating && currentTranslatingIndex === index}
-										<span 
-											class="inline transition-colors rounded px-0.5 {
-												isFailed ? 'bg-red-100 dark:bg-red-900/50 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700' :
-												isTranslating ? 'bg-blue-100 dark:bg-blue-900/50 animate-pulse' :
-												hoveredSentenceIndex === index ? 'bg-yellow-200 dark:bg-yellow-800' : 'hover:bg-muted'
-											}"
-											onmouseenter={() => hoveredSentenceIndex = index}
-											onmouseleave={() => hoveredSentenceIndex = -1}
-											role="button"
-											tabindex="0"
-											title={isFailed ? 'این جمله ترجمه نشد - کلیک کنید برای ترجمه مجدد' : ''}
-										>{sentence}{index < translatedSentences.length - 1 ? ' ' : ''}</span>
-									{/each}
-									{#if translatedSentences.length === 0 && !translating}
-										<div class="h-full flex items-center justify-center text-muted-foreground min-h-[200px]">
-											{#if selectedChapter.sourceText?.trim()}
-												<p>برای شروع ترجمه، دکمه "ترجمه این فصل" را بزنید</p>
+								<Button size="sm" variant="outline" class="h-8 text-xs" onclick={() => showReviewPromptEditor = !showReviewPromptEditor}>
+									{showReviewPromptEditor ? 'بستن پرامپت' : '⚙️ پرامپت'}
+								</Button>
+								<Button size="sm" class="h-8 text-xs" onclick={startReview} disabled={reviewing || (!selectedChapter?.sourceText?.trim() && !selectedChapter?.translatedText?.trim())}>
+									{reviewing ? 'در حال بررسی...' : '🔍 شروع بررسی'}
+								</Button>
+								{#if reviewMessages.length > 0}
+									<Button size="sm" variant="ghost" class="h-8 text-xs text-destructive" onclick={clearReview}>
+										🗑️ پاک کردن
+									</Button>
+								{/if}
+							</div>
+
+							{#if showReviewPromptEditor}
+								<div class="p-3 border-b bg-muted/5">
+									<Label class="text-xs mb-1 block">پرامپت سیستم (قابل ویرایش)</Label>
+									<Textarea 
+										bind:value={reviewSystemPrompt}
+										rows={4}
+										class="text-xs font-mono"
+										dir="auto"
+									/>
+									<div class="flex items-center gap-2 mt-2">
+										<Button size="sm" variant="ghost" class="h-7 text-xs" onclick={() => reviewSystemPrompt = getDefaultReviewPrompt()}>
+											بازگشت به پیش‌فرض
+										</Button>
+									</div>
+								</div>
+							{/if}
+
+							<!-- Chat Messages -->
+							<div class="flex-1 overflow-auto p-4 space-y-4" bind:this={reviewChatEl} style="min-height: 120px; max-height: 35vh;">
+								{#if reviewMessages.length === 0}
+									<div class="flex items-center justify-center h-full text-muted-foreground text-sm">
+										<p>دکمه «شروع بررسی» را بزنید تا AI ترجمه این فصل را بررسی کند</p>
+									</div>
+								{:else}
+									{#each reviewMessages as msg}
+										<div class="flex {msg.role === 'user' ? 'justify-end' : 'justify-start'}">
+											<div class="max-w-[85%] rounded-lg px-4 py-3 text-sm {msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'}" dir="auto">
+												{#if msg.role === 'assistant'}
+												<div class="prose prose-sm dark:prose-invert max-w-none break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">{@html renderMarkdown(msg.content)}</div>
 											{:else}
-												<p>ابتدا متن اصلی را وارد کنید</p>
+												<div class="whitespace-pre-wrap break-words">{msg.content}</div>
 											{/if}
+												{#if msg.model}
+													<div class="text-xs mt-1 opacity-60">{getModelName(msg.model)}</div>
+												{/if}
+											</div>
 										</div>
-									{/if}
-									{#if translating && translatedSentences.length === 0}
-										<div class="h-full flex items-center justify-center text-muted-foreground min-h-[200px]">
-											<div class="flex items-center gap-2">
-												<div class="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
-												<p>در حال ترجمه جمله اول...</p>
+									{/each}
+									{#if reviewing}
+										<div class="flex justify-start">
+											<div class="bg-muted rounded-lg px-4 py-3 text-sm flex items-center gap-2">
+												<div class="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+												<span class="text-muted-foreground">در حال بررسی...</span>
 											</div>
 										</div>
 									{/if}
+								{/if}
+							</div>
+
+							<!-- Chat Input -->
+							{#if reviewMessages.length > 0}
+								<div class="p-3 border-t flex items-center gap-2">
+									<Input
+										bind:value={reviewInput}
+										placeholder="سوال یا درخواست بیشتر..."
+										dir="auto"
+										class="flex-1 h-9 text-sm"
+										onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && sendReviewMessage()}
+									/>
+									<Button size="sm" class="h-9" onclick={sendReviewMessage} disabled={reviewing || !reviewInput.trim()}>
+										ارسال
+									</Button>
 								</div>
 							{/if}
-						</div>
+						{/if}
 					</div>
 				</div>
 			{:else}
