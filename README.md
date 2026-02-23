@@ -14,12 +14,15 @@
 - 🔒 **Privacy First** - هیچ داده‌ای به سرور ارسال نمی‌شود
 - 💾 **Offline-First** - ذخیره‌سازی با IndexedDB
 - 🤖 **Multi-LLM** - اتصال به مدل‌های مختلف از طریق OpenRouter
-- 📊 **Model Comparison** - مقایسه ترجمه چند مدل
+- 📊 **Model Comparison** - مقایسه ترجمه چند مدل با نمایش زمان سپری‌شده
+- ⏹️ **Per-Model Cancellation** - لغو درخواست هر مدل به صورت جداگانه بدون متوقف کردن سایر مدل‌ها
 - 📝 **Style Analysis** - تحلیل سبک نگارش با AI
 - 🎯 **Sentence-Aligned** - نمایش جمله‌به‌جمله متن و ترجمه
 - 🎨 **RTL Support** - پشتیبانی کامل از فارسی و راست‌به‌چپ
- - 📦 **Project Backup (Export/Import JSON)** - خروجی/ورودی یک یا چند کتاب از داشبورد (شامل پروژه، فصل‌ها، قوانین ترجمه و چت‌های ریویو)
- - 🔀 **Sorting** - مرتب‌سازی داشبورد بر اساس نام، تاریخ ساخت و تاریخ آخرین ویرایش
+- 🌍 **Custom Languages** - اضافه کردن زبان‌های سفارشی و استفاده در تمام پروژه‌ها
+- 📦 **Project Backup (Export/Import JSON)** - خروجی/ورودی یک یا چند کتاب از داشبورد (شامل پروژه، فصل‌ها، قوانین ترجمه و چت‌های ریویو)
+- 🔀 **Sorting** - مرتب‌سازی داشبورد بر اساس نام، تاریخ ساخت و تاریخ آخرین ویرایش
+- ⚙️ **Default Language Settings** - تنظیم زبان پیش‌فرض مبدأ و مقصد برای پروژه‌های جدید
 
 ## 📦 Contents
 
@@ -64,6 +67,21 @@ npm run dev
 The project will run at `http://localhost:5173`
 
 ## 📚 Usage
+
+### Language Settings
+
+- **Default Languages** - In Settings, set your preferred source and target languages
+  - These will be automatically selected when creating new projects
+- **Custom Languages** - Add custom language codes and names in Settings
+  - Custom languages appear in all language dropdowns across the app
+
+### Model Comparison with Cancellation
+
+- Click "شروع مقایسه" to start comparing selected models
+- Each model shows real-time progress with elapsed time
+- Cancel individual models with the "لغو" button without stopping others
+- Cancel all models at once with the "لغو همه" button
+- Progress remains visible even after comparison completes
 
 ### Backup / Restore Projects (JSON)
 
@@ -121,6 +139,9 @@ npm run rtl:generate
 
 # Update shadcn + generate RTL
 npm run rtl:update
+
+# Lint code
+npm run lint
 ```
 
 ## 📖 Project Structure
@@ -139,13 +160,22 @@ tarjomai/
 │   │   │   └── tarjomai/         # کامپوننت‌های اختصاصی
 │   │   ├── db/                   # IndexedDB (Dexie)
 │   │   ├── services/             # سرویس‌های داده
+│   │   │   ├── openrouter.service.js  # OpenRouter API with AbortController
+│   │   │   └── settings.service.js    # Settings persistence
 │   │   ├── stores/               # Svelte stores
+│   │   │   └── settings.store.js      # Language & API settings
 │   │   ├── utils/                # ابزارهای کمکی
 │   │   └── prompts/              # پرامپت‌های AI
 │   ├── routes/
 │   │   ├── (app)/                # صفحات اصلی
-│   │   │   ├── settings/
-│   │   │   └── projects/
+│   │   │   ├── settings/         # Settings with language config
+│   │   │   ├── projects/
+│   │   │   │   ├── new/          # New project (uses default languages)
+│   │   │   │   └── [id]/
+│   │   │   │       ├── analyze/  # Style analysis
+│   │   │   │       ├── compare/  # Model comparison with cancellation
+│   │   │   │       └── ...
+│   │   │   └── ...
 │   │   └── (archive)/            # صفحات نمونه shadcn
 │   └── app.css
 ├── scripts/
@@ -209,10 +239,20 @@ All 54 shadcn-svelte components with RTL support:
 
 ## 🌐 Language Support
 
+**Built-in Languages:**
 - ✅ Persian (فارسی)
 - ✅ Arabic (العربية)
-- ✅ Hebrew (עברית)
-- ✅ English
+- ✅ German (آلمانی)
+- ✅ French (فرانسوی)
+- ✅ Spanish (اسپانیایی)
+- ✅ Italian (ایتالیایی)
+- ✅ Russian (روسی)
+- ✅ Chinese (چینی)
+- ✅ Japanese (ژاپنی)
+- ✅ Turkish (ترکی)
+- ✅ English (انگلیسی)
+
+**Custom Languages:** Add any language code and name via Settings
 
 ## 🤝 Contributing
 
