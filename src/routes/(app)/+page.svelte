@@ -15,6 +15,34 @@
 	let importing = $state(false);
 	let exporting = $state(false);
 
+	// Sort state: 'updatedAt_desc' | 'updatedAt_asc' | 'createdAt_desc' | 'createdAt_asc' | 'title_asc' | 'title_desc'
+	let sortKey = $state('updatedAt_desc');
+
+	const sortOptions = [
+		{ value: 'updatedAt_desc', label: 'آخرین ویرایش (جدید)' },
+		{ value: 'updatedAt_asc',  label: 'آخرین ویرایش (قدیم)' },
+		{ value: 'createdAt_desc', label: 'تاریخ ساخت (جدید)' },
+		{ value: 'createdAt_asc',  label: 'تاریخ ساخت (قدیم)' },
+		{ value: 'title_asc',      label: 'نام (الف تا ی)' },
+		{ value: 'title_desc',     label: 'نام (ی تا الف)' },
+	];
+
+	const sortedProjects = $derived(() => {
+		const list = [...projects];
+		const [field, dir] = sortKey.split('_');
+		list.sort((a, b) => {
+			if (field === 'title') {
+				const cmp = (a.title || '').localeCompare(b.title || '', 'fa');
+				return dir === 'asc' ? cmp : -cmp;
+			} else {
+				const da = new Date(a[field] || 0).getTime();
+				const db = new Date(b[field] || 0).getTime();
+				return dir === 'desc' ? db - da : da - db;
+			}
+		});
+		return list;
+	});
+
 	onMount(async () => {
 		projects = await projectsStore.load();
 		loading = false;
@@ -105,7 +133,15 @@
 			<h1 class="text-3xl font-bold">ترجمای</h1>
 			<p class="text-muted-foreground mt-1">ابزار ترجمه و مقایسه هوشمند متون</p>
 		</div>
-		<div class="flex gap-2 flex-wrap justify-end">
+		<div class="flex gap-2 flex-wrap justify-end items-center">
+			<select
+				bind:value={sortKey}
+				class="h-9 rounded-md border border-input bg-background px-3 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring"
+			>
+				{#each sortOptions as opt}
+					<option value={opt.value}>{opt.label}</option>
+				{/each}
+			</select>
 			<Button variant="outline" href="/settings">تنظیمات</Button>
 			{#if !selectMode}
 				<Button variant="outline" onclick={toggleSelectMode}>📦 خروجی / ورودی</Button>
@@ -165,7 +201,7 @@
 		</Card>
 	{:else}
 		<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-			{#each projects as project (project.id)}
+			{#each sortedProjects() as project (project.id)}
 				<Card
 					class="hover:shadow-md transition-shadow group {selectMode ? 'cursor-pointer' : ''} {selectMode && selectedIds.has(project.id) ? 'ring-2 ring-primary' : ''}"
 					onclick={selectMode ? () => toggleSelect(project.id) : undefined}
