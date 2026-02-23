@@ -24,9 +24,11 @@
 	let comparing = $state(false);
 	let results = $state([]);
 
-	// Per-model progress tracking: { modelId, status: 'pending'|'loading'|'success'|'error', error? }
+	// Per-model progress tracking: { modelId, status: 'pending'|'loading'|'success'|'error'|'cancelled', error?, startTime?, elapsed? }
 	let modelStatuses = $state([]);
 	let currentModelIndex = $state(-1);
+	let abortControllers = $state({});
+	let elapsedTimers = $state({});
 
 	// Judge progress
 	let judgeStatus = $state('idle'); // 'idle' | 'loading' | 'success' | 'error'
@@ -180,6 +182,40 @@ IMPORTANT OUTPUT RULES:
 
 	const translationPromptPreview = $derived(buildTranslationSystemPrompt());
 
+	function cancelModel(index) {
+		const controller = abortControllers[index];
+		if (controller) {
+			controller.abort();
+		}
+	}
+
+	function cancelAllModels() {
+		for (const key of Object.keys(abortControllers)) {
+			abortControllers[key]?.abort();
+		}
+	}
+
+	function startElapsedTimer(index) {
+		modelStatuses[index].startTime = Date.now();
+		modelStatuses[index].elapsed = 0;
+		elapsedTimers[index] = setInterval(() => {
+			if (modelStatuses[index]?.startTime) {
+				modelStatuses[index].elapsed = Math.floor((Date.now() - modelStatuses[index].startTime) / 1000);
+				modelStatuses = [...modelStatuses];
+			}
+		}, 1000);
+	}
+
+	function stopElapsedTimer(index) {
+		if (elapsedTimers[index]) {
+			clearInterval(elapsedTimers[index]);
+			delete elapsedTimers[index];
+		}
+		if (modelStatuses[index]?.startTime) {
+			modelStatuses[index].elapsed = Math.floor((Date.now() - modelStatuses[index].startTime) / 1000);
+		}
+	}
+
 	async function compareModels() {
 		if (!sampleText.trim() || selectedModels.length === 0) return;
 		
@@ -187,13 +223,22 @@ IMPORTANT OUTPUT RULES:
 		results = [];
 		judgeResults = null;
 		currentModelIndex = -1;
+		abortControllers = {};
+
+		// Clear any leftover timers
+		for (const key of Object.keys(elapsedTimers)) {
+			clearInterval(elapsedTimers[key]);
+		}
+		elapsedTimers = {};
 
 		// Initialize statuses
 		modelStatuses = selectedModels.map(modelId => ({
 			modelId,
 			modelName: availableModels.find(m => m.id === modelId)?.name || modelId,
 			status: 'pending',
-			error: null
+			error: null,
+			startTime: null,
+			elapsed: 0
 		}));
 
 		// Save sample text
@@ -205,8 +250,15 @@ IMPORTANT OUTPUT RULES:
 		for (let i = 0; i < selectedModels.length; i++) {
 			const modelId = selectedModels[i];
 			currentModelIndex = i;
+
+			// Create AbortController for this model
+			const controller = new AbortController();
+			abortControllers[i] = controller;
+			abortControllers = { ...abortControllers };
+
 			modelStatuses[i].status = 'loading';
 			modelStatuses = [...modelStatuses];
+			startElapsedTimer(i);
 
 			try {
 				const result = await openrouterService.sendMessage(
@@ -216,10 +268,15 @@ IMPORTANT OUTPUT RULES:
 						{ role: 'system', content: systemPrompt },
 						{ role: 'user', content: `Translate this sentence:\n\n${sampleText}` }
 					],
-					{ temperature: 0, seed: 42, top_p: 1 }
+					{ temperature: 0, seed: 42, top_p: 1, signal: controller.signal }
 				);
 
-				if (result.success) {
+				stopElapsedTimer(i);
+
+				if (result.cancelled) {
+					modelStatuses[i].status = 'cancelled';
+					modelStatuses[i].error = 'لغو شده';
+				} else if (result.success) {
 					modelStatuses[i].status = 'success';
 					results = [...results, {
 						modelId,
@@ -240,16 +297,25 @@ IMPORTANT OUTPUT RULES:
 					}];
 				}
 			} catch (e) {
-				modelStatuses[i].status = 'error';
-				modelStatuses[i].error = e.message || 'خطای ناشناخته';
-				results = [...results, {
-					modelId,
-					modelName: modelStatuses[i].modelName,
-					translation: null,
-					error: e.message || 'خطای ناشناخته',
-					rating: 0
-				}];
+				stopElapsedTimer(i);
+				if (e.name === 'AbortError') {
+					modelStatuses[i].status = 'cancelled';
+					modelStatuses[i].error = 'لغو شده';
+				} else {
+					modelStatuses[i].status = 'error';
+					modelStatuses[i].error = e.message || 'خطای ناشناخته';
+					results = [...results, {
+						modelId,
+						modelName: modelStatuses[i].modelName,
+						translation: null,
+						error: e.message || 'خطای ناشناخته',
+						rating: 0
+					}];
+				}
 			}
+
+			delete abortControllers[i];
+			abortControllers = { ...abortControllers };
 			modelStatuses = [...modelStatuses];
 		}
 
@@ -511,18 +577,26 @@ IMPORTANT OUTPUT RULES:
 				</div>
 			{/if}
 
-			{#if comparing && modelStatuses.length > 0}
+			{#if modelStatuses.length > 0 && (comparing || modelStatuses.some(s => s.status !== 'pending'))}
 				<div class="mt-4 p-4 rounded-lg border bg-muted/20 space-y-3">
 					<div class="flex items-center justify-between text-sm font-medium">
 						<span>پیشرفت ترجمه</span>
 						<span class="text-muted-foreground">
-							{modelStatuses.filter(s => s.status === 'success' || s.status === 'error').length} / {modelStatuses.length}
+							{modelStatuses.filter(s => s.status === 'success' || s.status === 'error' || s.status === 'cancelled').length} / {modelStatuses.length}
 						</span>
+						{#if comparing}
+							<button
+								class="text-xs text-red-500 hover:text-red-700 underline"
+								onclick={cancelAllModels}
+							>
+								لغو همه
+							</button>
+						{/if}
 					</div>
 					<div class="w-full bg-muted rounded-full h-2">
 						<div
 							class="bg-primary h-2 rounded-full transition-all duration-300"
-							style="width: {(modelStatuses.filter(s => s.status === 'success' || s.status === 'error').length / modelStatuses.length) * 100}%"
+							style="width: {(modelStatuses.filter(s => s.status === 'success' || s.status === 'error' || s.status === 'cancelled').length / modelStatuses.length) * 100}%"
 						></div>
 					</div>
 					<div class="space-y-1.5">
@@ -536,14 +610,27 @@ IMPORTANT OUTPUT RULES:
 									<span class="w-5 h-5 flex items-center justify-center text-green-600">✅</span>
 								{:else if ms.status === 'error'}
 									<span class="w-5 h-5 flex items-center justify-center text-red-600">❌</span>
+								{:else if ms.status === 'cancelled'}
+									<span class="w-5 h-5 flex items-center justify-center text-orange-500">⊘</span>
 								{/if}
 								<span class="flex-1 {ms.status === 'loading' ? 'font-medium' : ''}">{ms.modelName}</span>
 								{#if ms.status === 'loading'}
+									<span class="text-xs text-muted-foreground tabular-nums">{ms.elapsed || 0}s</span>
 									<span class="text-xs text-muted-foreground animate-pulse">در حال ارسال...</span>
+									<button
+										class="text-xs text-red-500 hover:text-red-700 border border-red-300 rounded px-1.5 py-0.5 hover:bg-red-50 dark:hover:bg-red-950 transition-colors"
+										onclick={() => cancelModel(i)}
+									>
+										لغو
+									</button>
 								{:else if ms.status === 'error'}
+									<span class="text-xs text-muted-foreground tabular-nums">{ms.elapsed || 0}s</span>
 									<span class="text-xs text-red-500 truncate max-w-[200px]" title={ms.error}>{ms.error}</span>
 								{:else if ms.status === 'success'}
+									<span class="text-xs text-muted-foreground tabular-nums">{ms.elapsed || 0}s</span>
 									<span class="text-xs text-green-600">موفق</span>
+								{:else if ms.status === 'cancelled'}
+									<span class="text-xs text-orange-500">لغو شده</span>
 								{/if}
 							</div>
 						{/each}

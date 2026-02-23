@@ -51,11 +51,16 @@ export const openrouterService = {
   async sendMessage(apiKey, model, messages, options = {}) {
     const maxRetries = 3;
     let lastError = null;
+    const signal = options.signal;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
+      if (signal?.aborted) {
+        return { success: false, error: 'لغو شده توسط کاربر', cancelled: true };
+      }
       try {
         const response = await fetch(`${OPENROUTER_API_URL}/chat/completions`, {
           method: 'POST',
+          signal,
           headers: {
             'Authorization': `Bearer ${apiKey}`,
             'HTTP-Referer': window.location.origin,
@@ -112,6 +117,9 @@ export const openrouterService = {
           usage: data.usage
         };
       } catch (error) {
+        if (error.name === 'AbortError') {
+          return { success: false, error: 'لغو شده توسط کاربر', cancelled: true };
+        }
         lastError = error;
         if (attempt < maxRetries - 1) {
           await this.sleep(Math.pow(2, attempt) * 1000);
