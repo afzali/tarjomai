@@ -18,6 +18,8 @@
 - 📝 **Style Analysis** - تحلیل سبک نگارش با AI
 - 🎯 **Sentence-Aligned** - نمایش جمله‌به‌جمله متن و ترجمه
 - 🎨 **RTL Support** - پشتیبانی کامل از فارسی و راست‌به‌چپ
+ - 📦 **Project Backup (Export/Import JSON)** - خروجی/ورودی یک یا چند کتاب از داشبورد (شامل پروژه، فصل‌ها، قوانین ترجمه و چت‌های ریویو)
+ - 🔀 **Sorting** - مرتب‌سازی داشبورد بر اساس نام، تاریخ ساخت و تاریخ آخرین ویرایش
 
 ## 📦 Contents
 
@@ -62,6 +64,17 @@ npm run dev
 The project will run at `http://localhost:5173`
 
 ## 📚 Usage
+
+### Backup / Restore Projects (JSON)
+
+- **Export**
+  - From the Dashboard (`/`) click `خروجی / ورودی`
+  - Select one or more projects
+  - Click `خروجی JSON`
+- **Import**
+  - From the Dashboard (`/`) click `خروجی / ورودی` then `ورودی JSON`
+  - Or use `وارد کردن از فایل` when the list is empty
+  - Imported projects are added as new projects (existing data is not overwritten)
 
 ### Using RTL Components
 
