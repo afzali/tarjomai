@@ -17,6 +17,8 @@
 	let testing = $state(false);
 	let testResult = $state(null);
 	let saving = $state(false);
+	let savingLang = $state(false);
+	let langSaved = $state(false);
 	let credits = $state(null);
 	let loadingCredits = $state(false);
 	let activity = $state(null);
@@ -24,13 +26,28 @@
 	let localUsage = $state(null);
 	let loadingLocalUsage = $state(false);
 
-	const languageItems = [
+	// Custom language addition
+	let newLangValue = $state('');
+	let newLangLabel = $state('');
+	let addLangError = $state('');
+
+	const defaultLanguageItems = [
 		{ value: 'en', label: 'انگلیسی' },
 		{ value: 'fa', label: 'فارسی' },
 		{ value: 'ar', label: 'عربی' },
 		{ value: 'de', label: 'آلمانی' },
-		{ value: 'fr', label: 'فرانسوی' }
+		{ value: 'fr', label: 'فرانسوی' },
+		{ value: 'es', label: 'اسپانیایی' },
+		{ value: 'it', label: 'ایتالیایی' },
+		{ value: 'ru', label: 'روسی' },
+		{ value: 'zh', label: 'چینی' },
+		{ value: 'ja', label: 'ژاپنی' },
+		{ value: 'tr', label: 'ترکی' }
 	];
+
+	let customLanguageItems = $state([]);
+
+	const languageItems = $derived([...defaultLanguageItems, ...customLanguageItems]);
 
 	const uiLanguageItems = [
 		{ value: 'fa', label: 'فارسی' },
@@ -47,6 +64,7 @@
 		uiLanguage = settings?.uiLanguage || 'fa';
 		defaultSourceLanguage = settings?.defaultSourceLanguage || 'en';
 		defaultTargetLanguage = settings?.defaultTargetLanguage || 'fa';
+		customLanguageItems = settings?.customLanguages || [];
 		
 		if (apiKey) {
 			loadCredits();
@@ -104,9 +122,45 @@
 			openRouterApiKey: apiKey,
 			uiLanguage,
 			defaultSourceLanguage,
-			defaultTargetLanguage
+			defaultTargetLanguage,
+			customLanguages: customLanguageItems
 		});
 		saving = false;
+	}
+
+	async function saveLanguageSettings() {
+		savingLang = true;
+		await settingsStore.save({
+			...settings,
+			uiLanguage,
+			defaultSourceLanguage,
+			defaultTargetLanguage,
+			customLanguages: customLanguageItems
+		});
+		savingLang = false;
+		langSaved = true;
+		setTimeout(() => langSaved = false, 2000);
+	}
+
+	function addCustomLanguage() {
+		addLangError = '';
+		const val = newLangValue.trim().toLowerCase();
+		const lbl = newLangLabel.trim();
+		if (!val || !lbl) {
+			addLangError = 'هر دو فیلد کد و نام زبان الزامی هستند';
+			return;
+		}
+		if (languageItems.find(l => l.value === val)) {
+			addLangError = `زبان با کد «${val}» از قبل وجود دارد`;
+			return;
+		}
+		customLanguageItems = [...customLanguageItems, { value: val, label: lbl }];
+		newLangValue = '';
+		newLangLabel = '';
+	}
+
+	function removeCustomLanguage(value) {
+		customLanguageItems = customLanguageItems.filter(l => l.value !== value);
 	}
 
 	async function clearAllData() {
@@ -338,7 +392,7 @@
 			<CardHeader>
 				<CardTitle>زبان رابط کاربری</CardTitle>
 			</CardHeader>
-			<CardContent>
+			<CardContent class="space-y-4">
 				<Select.Root type="single" bind:value={uiLanguage}>
 					<Select.Trigger class="w-full">
 						{uiLangLabel}
@@ -349,12 +403,21 @@
 						{/each}
 					</Select.Content>
 				</Select.Root>
+				<div class="flex items-center gap-3">
+					<Button onclick={saveLanguageSettings} disabled={savingLang}>
+						{savingLang ? 'در حال ذخیره...' : 'ذخیره تنظیمات زبان'}
+					</Button>
+					{#if langSaved}
+						<span class="text-sm text-green-600">✓ ذخیره شد</span>
+					{/if}
+				</div>
 			</CardContent>
 		</Card>
 
 		<Card>
 			<CardHeader>
 				<CardTitle>زبان‌های پیش‌فرض</CardTitle>
+				<CardDescription>زبان مبدأ و مقصد پیش‌فرض برای پروژه‌های جدید</CardDescription>
 			</CardHeader>
 			<CardContent class="space-y-4">
 				<div class="grid grid-cols-2 gap-4">
@@ -384,6 +447,65 @@
 							</Select.Content>
 						</Select.Root>
 					</div>
+				</div>
+
+				<!-- Add custom language -->
+				<div class="border rounded-lg p-4 space-y-3 bg-muted/20">
+					<p class="text-sm font-medium">افزودن زبان جدید به لیست</p>
+					<div class="grid grid-cols-2 gap-3">
+						<div class="space-y-1">
+							<Label class="text-xs">کد زبان (مثال: ko، nl، sv)</Label>
+							<Input
+								bind:value={newLangValue}
+								placeholder="ko"
+								dir="ltr"
+								class="font-mono"
+							/>
+						</div>
+						<div class="space-y-1">
+							<Label class="text-xs">نام زبان (مثال: کره‌ای)</Label>
+							<Input
+								bind:value={newLangLabel}
+								placeholder="کره‌ای"
+								dir="auto"
+							/>
+						</div>
+					</div>
+					{#if addLangError}
+						<p class="text-xs text-red-500">{addLangError}</p>
+					{/if}
+					<Button variant="outline" onclick={addCustomLanguage} disabled={!newLangValue.trim() || !newLangLabel.trim()}>
+						+ افزودن زبان
+					</Button>
+				</div>
+
+				<!-- Custom languages list -->
+				{#if customLanguageItems.length > 0}
+					<div class="space-y-2">
+						<p class="text-sm font-medium">زبان‌های اضافه شده:</p>
+						<div class="flex flex-wrap gap-2">
+							{#each customLanguageItems as lang}
+								<div class="flex items-center gap-1 bg-muted rounded-full px-3 py-1 text-sm">
+									<span>{lang.label}</span>
+									<span class="text-muted-foreground font-mono text-xs">({lang.value})</span>
+									<button
+										class="mr-1 text-muted-foreground hover:text-destructive transition-colors"
+										onclick={() => removeCustomLanguage(lang.value)}
+										title="حذف"
+									>×</button>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				<div class="flex items-center gap-3 pt-2 border-t">
+					<Button onclick={saveLanguageSettings} disabled={savingLang}>
+						{savingLang ? 'در حال ذخیره...' : 'ذخیره تنظیمات زبان'}
+					</Button>
+					{#if langSaved}
+						<span class="text-sm text-green-600">✓ ذخیره شد</span>
+					{/if}
 				</div>
 			</CardContent>
 		</Card>
