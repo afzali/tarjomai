@@ -66,7 +66,7 @@
 		const data = await currentProjectStore.load(parseInt(projectId));
 		if (data) {
 			project = data.project;
-			rules = data.rules;
+			rules = data.config;
 			if (rules) {
 				tone = rules.tone?.length > 0 ? [...rules.tone] : ['formal'];
 				vocabularyLevel = rules.vocabularyLevel || 'medium';

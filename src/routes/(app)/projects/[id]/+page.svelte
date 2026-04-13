@@ -17,9 +17,15 @@
 	import { marked } from 'marked';
 
 	let projectId = $derived($page.params.id);
+	/** @type {any} */
 	let project = $state(null);
-	let rules = $state(null);
+	/** @type {any} */
+	let rules = $state(null);   // kept for backward compat in this file
+	/** @type {any} */
+	let config = $state(null);
+	/** @type {any[]} */
 	let chapters = $state([]);
+	/** @type {any} */
 	let selectedChapter = $state(null);
 	let loading = $state(true);
 	let translating = $state(false);
@@ -36,7 +42,7 @@
 	// Use explicit segments during translation for perfect alignment, fallback to split text otherwise
 	let translatedSegments = $state([]);
 	let translatedSentences = $derived(
-		translating ? translatedSegments : (selectedChapter?.translatedText?.split(/(?<=[.!?؟。])\s*|\n+/).filter(s => s.trim()) || [])
+		translating ? translatedSegments : ((selectedChapter?.outputText || selectedChapter?.translatedText)?.split(/(?<=[.!?؟。])\s*|\n+/).filter(s => s.trim()) || [])
 	);
 
 	let hoveredSentenceIndex = $state(-1);
@@ -118,7 +124,8 @@
 		const data = await currentProjectStore.load(parseInt(projectId));
 		if (data) {
 			project = data.project;
-			rules = data.rules;
+			rules = data.config;   // config replaces rules; keep alias
+			config = data.config;
 			chapters = data.chapters;
 			if (chapters.length > 0) {
 				selectedChapter = chapters[0];
@@ -149,7 +156,7 @@
 		const chapter = await currentProjectStore.addChapter({
 			title: newChapterTitle.trim(),
 			sourceText: '',
-			translatedText: ''
+			outputText: ''
 		});
 		selectedChapter = chapter;
 		showNewChapterModal = false;
@@ -160,7 +167,7 @@
 		if (!selectedChapter) return;
 		await currentProjectStore.updateChapter(selectedChapter.id, {
 			sourceText: selectedChapter.sourceText,
-			translatedText: selectedChapter.translatedText
+			outputText: selectedChapter.outputText || selectedChapter.translatedText || ''
 		});
 		lastSavedSourceText = selectedChapter.sourceText;
 		hasUnsavedChanges = false;
@@ -238,8 +245,8 @@
 
 	// Check if source text changed after last translation
 	const sourceTextChanged = $derived(
-		selectedChapter?.translatedText?.trim() && 
-		lastTranslatedSourceText && 
+		(selectedChapter?.outputText || selectedChapter?.translatedText)?.trim() &&
+		lastTranslatedSourceText &&
 		selectedChapter?.sourceText !== lastTranslatedSourceText
 	);
 
@@ -389,7 +396,7 @@ IMPORTANT OUTPUT RULES:
 				reconstructedText += translatedSegments[j];
 			}
 			
-			selectedChapter.translatedText = reconstructedText;
+			selectedChapter.outputText = reconstructedText;
 		}
 		
 		await saveChapter();
@@ -423,61 +430,13 @@ IMPORTANT OUTPUT RULES:
 
 	function exportToWord() {
 		if (!chapters || chapters.length === 0) return;
-
-		let content = '';
-		
-		// Add project title
-		content += `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-		<head><meta charset="utf-8"><title>${project?.title || 'ترجمه'}</title>
-		<style>
-			body { font-family: 'B Nazanin', 'Tahoma', sans-serif; direction: rtl; }
-			h1 { font-size: 24pt; text-align: center; margin-bottom: 20pt; }
-			h2 { font-size: 18pt; margin-top: 20pt; margin-bottom: 10pt; border-bottom: 1px solid #ccc; padding-bottom: 5pt; }
-			h3 { font-size: 14pt; color: #666; margin-top: 15pt; margin-bottom: 5pt; }
-			p { font-size: 12pt; line-height: 1.8; text-align: justify; margin-bottom: 10pt; }
-			.source { background-color: #f5f5f5; padding: 10pt; border-right: 3px solid #ccc; margin-bottom: 15pt; }
-			.translated { padding: 10pt; }
-		</style>
-		</head><body>`;
-		
-		content += `<h1>${project?.title || 'ترجمه'}</h1>`;
-		
-		for (const chapter of chapters) {
-			content += `<h2>${chapter.title}</h2>`;
-			
-			if (exportIncludeSource && chapter.sourceText?.trim()) {
-				content += `<h3>متن اصلی:</h3>`;
-				content += `<div class="source">`;
-				const sourceParagraphs = chapter.sourceText.split(/\n\n+/).filter(p => p.trim());
-				for (const para of sourceParagraphs) {
-					content += `<p>${para}</p>`;
-				}
-				content += `</div>`;
-			}
-			
-			if (chapter.translatedText?.trim()) {
-				if (exportIncludeSource) {
-					content += `<h3>ترجمه:</h3>`;
-				}
-				content += `<div class="translated">`;
-				const translatedParagraphs = chapter.translatedText.split(/\n\n+/).filter(p => p.trim());
-				for (const para of translatedParagraphs) {
-					content += `<p>${para}</p>`;
-				}
-				content += `</div>`;
-			}
-		}
-		
-		content += `</body></html>`;
-		
-		// Create and download file
-		const blob = new Blob([content], { type: 'application/msword' });
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement('a');
-		a.href = url;
-		a.download = `${project?.title || 'translation'}.doc`;
-		a.click();
-		URL.revokeObjectURL(url);
+		// Use the unified export utility
+		import('$lib/utils/export.utils.js').then(({ exportUtils }) => {
+			exportUtils.exportToWord(project, chapters, {
+				includeSource: exportIncludeSource,
+				outputLabel: 'ترجمه'
+			});
+		});
 		showExportModal = false;
 	}
 
@@ -492,13 +451,14 @@ IMPORTANT OUTPUT RULES:
 
 	async function startReview() {
 		if (!selectedChapter || !settings?.openRouterApiKey) return;
-		if (!selectedChapter.sourceText?.trim() && !selectedChapter.translatedText?.trim()) return;
+		const chapterOutputText = selectedChapter.outputText || selectedChapter.translatedText || '';
+		if (!selectedChapter.sourceText?.trim() && !chapterOutputText.trim()) return;
 
 		reviewing = true;
 		reviewOpen = true;
 
 		const sourceText = selectedChapter.sourceText || '(بدون متن اصلی)';
-		const translatedText = selectedChapter.translatedText || '(بدون ترجمه)';
+		const translatedText = chapterOutputText || '(بدون ترجمه)';
 
 		const userContent = `لطفاً این فصل را بررسی کن:\n\n**متن اصلی:**\n${sourceText}\n\n**ترجمه:**\n${translatedText}`;
 
@@ -784,7 +744,7 @@ IMPORTANT OUTPUT RULES:
 							<div class="p-3 border-b bg-muted/30 flex items-center justify-between">
 								<h3 class="font-medium text-sm">ترجمه ({project.targetLanguage})</h3>
 								<div class="flex items-center gap-1">
-									{#if !editingTranslation && selectedChapter.translatedText?.trim()}
+									{#if !editingTranslation && (selectedChapter.outputText || selectedChapter.translatedText)?.trim()}
 										<button 
 											class="text-xs px-2 py-1 rounded bg-muted hover:bg-muted/80 transition-colors"
 											onclick={() => { editingTranslation = true; editMode = true; }}
@@ -804,7 +764,7 @@ IMPORTANT OUTPUT RULES:
 							<div class="flex-1 overflow-auto p-4">
 								{#if editingTranslation}
 									<textarea
-										bind:value={selectedChapter.translatedText}
+										bind:value={selectedChapter.outputText}
 										class="w-full h-full min-h-[300px] resize-none border rounded-lg p-4 bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 leading-relaxed text-base"
 										placeholder="متن ترجمه را ویرایش کنید..."
 										dir="auto"
@@ -889,7 +849,7 @@ IMPORTANT OUTPUT RULES:
 								<Button size="sm" variant="outline" class="h-8 text-xs" onclick={() => showReviewPromptEditor = !showReviewPromptEditor}>
 									{showReviewPromptEditor ? 'بستن پرامپت' : '⚙️ پرامپت'}
 								</Button>
-								<Button size="sm" class="h-8 text-xs" onclick={startReview} disabled={reviewing || (!selectedChapter?.sourceText?.trim() && !selectedChapter?.translatedText?.trim())}>
+								<Button size="sm" class="h-8 text-xs" onclick={startReview} disabled={reviewing || (!selectedChapter?.sourceText?.trim() && !(selectedChapter?.outputText || selectedChapter?.translatedText)?.trim())}>
 									{reviewing ? 'در حال بررسی...' : '🔍 شروع بررسی'}
 								</Button>
 								{#if reviewMessages.length > 0}

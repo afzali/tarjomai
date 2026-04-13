@@ -2,6 +2,7 @@ import { db } from '$lib/db';
 
 export const usageService = {
   async addUsage(data) {
+    const now = new Date();
     const record = {
       model: data.model,
       promptTokens: data.usage?.prompt_tokens || 0,
@@ -9,10 +10,57 @@ export const usageService = {
       totalTokens: data.usage?.total_tokens || 0,
       cost: data.usage?.cost || 0,
       projectId: data.projectId || null,
-      timestamp: new Date().toISOString()
+      chapterId: data.chapterId || null,
+      operationType: data.operationType || null,
+      date: now.toISOString().slice(0, 10),
+      timestamp: now.toISOString()
     };
     
     return await db.usageHistory.add(record);
+  },
+
+  async getByChapter(chapterId) {
+    return await db.usageHistory
+      .where('chapterId').equals(chapterId)
+      .sortBy('timestamp');
+  },
+
+  async getByProject(projectId) {
+    return await db.usageHistory
+      .where('projectId').equals(projectId)
+      .sortBy('timestamp');
+  },
+
+  async getByDate(date) {
+    return await db.usageHistory
+      .where('date').equals(date)
+      .toArray();
+  },
+
+  async getDailyBreakdown(projectId) {
+    const records = projectId
+      ? await db.usageHistory.where('projectId').equals(projectId).toArray()
+      : await db.usageHistory.toArray();
+    /** @type {Record<string, { date: string, cost: number, tokens: number, requests: number, details: any[] }>} */
+    const byDay = {};
+    for (const r of records) {
+      const d = r.date || r.timestamp?.slice(0, 10) || '?';
+      if (!byDay[d]) byDay[d] = { date: d, cost: 0, tokens: 0, requests: 0, details: [] };
+      byDay[d].cost += r.cost || 0;
+      byDay[d].tokens += r.totalTokens || 0;
+      byDay[d].requests += 1;
+      byDay[d].details.push(r);
+    }
+    return Object.values(byDay).sort((a, b) => b.date.localeCompare(a.date));
+  },
+
+  async getChapterStats(chapterId) {
+    const records = await this.getByChapter(chapterId);
+    return records.reduce((acc, r) => ({
+      totalCost: acc.totalCost + (r.cost || 0),
+      totalTokens: acc.totalTokens + (r.totalTokens || 0),
+      requests: acc.requests + 1
+    }), { totalCost: 0, totalTokens: 0, requests: 0 });
   },
 
   async getHistory(limit = 50) {
@@ -105,6 +153,11 @@ export const usageService = {
 
   async clearHistory() {
     return await db.usageHistory.clear();
+  },
+
+  formatCost(cost) {
+    if (!cost) return '$0.000000';
+    return '$' + cost.toFixed(6);
   }
 };
 

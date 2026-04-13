@@ -46,7 +46,7 @@
 		const data = await currentProjectStore.load(parseInt(projectId));
 		if (data) {
 			project = data.project;
-			rules = data.rules;
+			rules = data.config;
 			wizardData = project?.wizardData || null;
 		}
 		loading = false;

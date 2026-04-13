@@ -114,7 +114,7 @@ Respond in JSON format:
 		const data = await currentProjectStore.load(parseInt(projectId));
 		if (data) {
 			project = data.project;
-			rules = data.rules;
+			rules = data.config;
 			
 			// Load saved comparison data
 			const savedData = await projectsService.getWizardStepData(parseInt(projectId), 'compare');

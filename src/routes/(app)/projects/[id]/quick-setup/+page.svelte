@@ -52,11 +52,11 @@
 		const data = await currentProjectStore.load(parseInt(projectId));
 		if (data) {
 			project = data.project;
-			if (data.rules) {
-				tone = data.rules.tone?.[0] || 'formal';
-				vocabularyLevel = data.rules.vocabularyLevel || 'medium';
-				translationType = data.rules.translationType || 'balanced';
-				customRules = data.rules.customRules?.join('\n') || '';
+			if (data.config) {
+				tone = data.config.tone?.[0] || 'formal';
+				vocabularyLevel = data.config.vocabularyLevel || 'medium';
+				translationType = data.config.translationType || 'balanced';
+				customRules = data.config.customRules?.join('\n') || '';
 			}
 		}
 

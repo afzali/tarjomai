@@ -13,8 +13,8 @@ export const chaptersService = {
     // Convert Svelte 5 Proxy to plain object
     const plainData = JSON.parse(JSON.stringify(chapterData));
     const existingChapters = await this.getChaptersByProject(plainData.projectId);
-    const maxOrder = existingChapters.length > 0 
-      ? Math.max(...existingChapters.map(c => c.order)) 
+    const maxOrder = existingChapters.length > 0
+      ? Math.max(...existingChapters.map(c => c.order))
       : 0;
 
     const chapter = {
@@ -22,7 +22,8 @@ export const chaptersService = {
       order: plainData.order ?? maxOrder + 1,
       status: 'pending',
       sourceText: plainData.sourceText || '',
-      translatedText: '',
+      outputText: plainData.outputText || '',
+      segmentData: plainData.segmentData || null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -43,23 +44,39 @@ export const chaptersService = {
   },
 
   async reorderChapters(projectId, orderedIds) {
-    const updates = orderedIds.map((id, index) => 
+    const updates = orderedIds.map((id, index) =>
       db.chapters.update(id, { order: index + 1 })
     );
     await Promise.all(updates);
   },
 
-  async updateTranslation(id, translatedText) {
-    await db.chapters.update(id, { 
-      translatedText, 
+  // Primary method: update the output text for any operation type
+  async updateOutput(id, outputText) {
+    await db.chapters.update(id, {
+      outputText,
       status: 'completed',
-      updatedAt: new Date() 
+      updatedAt: new Date().toISOString()
+    });
+    return this.getChapter(id);
+  },
+
+  // Alias for backward compatibility with translation code
+  async updateTranslation(id, translatedText) {
+    return this.updateOutput(id, translatedText);
+  },
+
+  // Update segment data (for editorial accept/reject workflow)
+  async updateSegmentData(id, segmentData) {
+    const plainData = JSON.parse(JSON.stringify(segmentData));
+    await db.chapters.update(id, {
+      segmentData: plainData,
+      updatedAt: new Date().toISOString()
     });
     return this.getChapter(id);
   },
 
   async setStatus(id, status) {
-    await db.chapters.update(id, { status, updatedAt: new Date() });
+    await db.chapters.update(id, { status, updatedAt: new Date().toISOString() });
     return this.getChapter(id);
   }
 };

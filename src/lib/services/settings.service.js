@@ -29,8 +29,11 @@ export const settingsService = {
     await db.settings.clear();
     await db.projects.clear();
     await db.chapters.clear();
-    await db.translationRules.clear();
+    await db.operationConfig.clear();
     await db.presets.clear();
+    await db.usageHistory.clear();
+    await db.reviewMessages.clear();
+    await db.folders.clear();
   },
 
   getDefaultSettings() {
@@ -41,7 +44,8 @@ export const settingsService = {
       defaultModels: {
         styleAnalysis: 'anthropic/claude-sonnet-4',
         translation: 'anthropic/claude-sonnet-4',
-        scoring: 'anthropic/claude-sonnet-4'
+        scoring: 'anthropic/claude-sonnet-4',
+        editorial: 'anthropic/claude-sonnet-4'
       },
       defaultSourceLanguage: 'en',
       defaultTargetLanguage: 'fa',
