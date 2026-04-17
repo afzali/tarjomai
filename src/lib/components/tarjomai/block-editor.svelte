@@ -82,16 +82,9 @@
   /** @param {number} idx @param {string} content */
   function updateContent(idx, content) {
     const hadOutput = !!(blocks[idx].outputText);
-    const willGoOutOfSync = hadOutput && blocks[idx].content !== content;
-    if (willGoOutOfSync && !blocks[idx].outOfSync) {
-      if (!confirm('این بند خروجی AI دارد. با ویرایش، خروجی از سینک خارج می‌شود. ادامه می‌دهید؟')) {
-        // Restore original content in DOM
-        const el = blockRefs[blocks[idx].id];
-        if (el) el.textContent = blocks[idx].content;
-        return;
-      }
-    }
-    blocks[idx] = { ...blocks[idx], content, outOfSync: hadOutput ? true : false };
+    // Mark outOfSync silently - the parent page shows a unified indicator + sync button
+    // instead of a blocking confirm prompt.
+    blocks[idx] = { ...blocks[idx], content, outOfSync: hadOutput ? true : blocks[idx].outOfSync ?? false };
     blocks = [...blocks];
     notify();
   }

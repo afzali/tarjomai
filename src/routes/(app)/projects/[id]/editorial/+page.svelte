@@ -12,7 +12,6 @@
   import { fetchModels } from '$lib/stores/models.store.js';
   import { allModels } from '$lib/models.js';
   import BlockEditor from '$lib/components/tarjomai/block-editor.svelte';
-  import DiffView from '$lib/components/tarjomai/diff-view.svelte';
   import FileTypeIcon from '$lib/components/tarjomai/file-type-icon.svelte';
   import ReviewPanel from '$lib/components/tarjomai/review-panel.svelte';
   import { usageService } from '$lib/services/usage.service.js';
@@ -38,10 +37,20 @@
 
   // Block-based state — each block is one paragraph/heading/etc
   /**
-   * @typedef {{ id: string, type: string, content: string, outputText?: string, editedText?: string|null, status?: string, outOfSync?: boolean, _editing?: boolean, _editVal?: string }} Block
+   * @typedef {{
+   *   id: string, type: string, content: string,
+   *   outputText?: string, editedText?: string|null,
+   *   status?: string, outOfSync?: boolean,
+   *   _editing?: boolean, _editVal?: string,
+   *   originalContent?: string, originalOutput?: string
+   * }} Block
    */
   /** @type {Block[]} */
   let blocks = $state([]);
+
+  // Chapter deletion modal (replaces browser confirm())
+  /** @type {any} */
+  let chapterToDelete = $state(null);
 
   // Hover sync between columns
   let hoveredBlockId = $state('');
@@ -219,12 +228,89 @@
     processingIndex = -1;
   }
 
+  /** Get the current effective output text of a block (edited > output > empty) */
+  function blockOutputText(/** @type {Block} */ b) {
+    if (b.status === 'edited') return b.editedText || b.outputText || '';
+    return b.outputText || '';
+  }
+
+  /**
+   * Save a snapshot of original source & output after processing completes.
+   * Used as the baseline for detecting drift.
+   * @param {Block} b
+   * @returns {Block}
+   */
+  function saveSnapshot(b) {
+    return { ...b, originalContent: b.content, originalOutput: blockOutputText(b) };
+  }
+
+  /**
+   * Detect drift of source/output since last snapshot.
+   * @param {Block} b
+   */
+  function checkModifications(b) {
+    const contentChanged = b.originalContent !== undefined ? b.content !== b.originalContent : false;
+    const outputChanged = b.originalOutput !== undefined ? blockOutputText(b) !== b.originalOutput : false;
+    return { contentChanged, outputChanged, hasChanges: contentChanged || outputChanged };
+  }
+
+  /**
+   * Word-level diff between two strings using LCS.
+   * @param {string} oldText
+   * @param {string} newText
+   * @returns {{type:'equal'|'insert'|'delete', text:string}[]}
+   */
+  function wordDiff(oldText, newText) {
+    const tokenize = (/** @type {string} */ s) => (s || '').split(/(\s+)/).filter(t => t.length > 0);
+    const a = tokenize(oldText || '');
+    const b = tokenize(newText || '');
+    const n = a.length, m = b.length;
+    /** @type {number[][]} */
+    const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    /** @type {{type:'equal'|'insert'|'delete', text:string}[]} */
+    const out = [];
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (a[i] === b[j]) { out.push({ type: 'equal', text: a[i] }); i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ type: 'delete', text: a[i] }); i++; }
+      else { out.push({ type: 'insert', text: b[j] }); j++; }
+    }
+    while (i < n) { out.push({ type: 'delete', text: a[i++] }); }
+    while (j < m) { out.push({ type: 'insert', text: b[j++] }); }
+    /** @type {{type:'equal'|'insert'|'delete', text:string}[]} */
+    const merged = [];
+    for (const seg of out) {
+      const last = merged[merged.length - 1];
+      if (last && last.type === seg.type) last.text += seg.text;
+      else merged.push({ ...seg });
+    }
+    return merged;
+  }
+
+  /**
+   * Split a word-level diff into the source-side view and the output-side view.
+   * - srcSide: equal + delete segments → shown in source column (deleted parts = red)
+   * - outSide: equal + insert segments → shown in output column (inserted parts = green)
+   * This way, both columns show their OWN version with just the changed parts highlighted,
+   * not a mixed red/green view.
+   * @param {string} source
+   * @param {string} output
+   */
+  function splitDiff(source, output) {
+    const diff = wordDiff(source, output);
+    const srcSide = diff.filter(s => s.type !== 'insert');
+    const outSide = diff.filter(s => s.type !== 'delete');
+    return { srcSide, outSide };
+  }
+
   async function saveBlocks() {
     if (!selectedChapter) return;
-    const finalOutput = blocks.map(b => {
-      if (b.status === 'edited') return b.editedText || b.outputText || '';
-      return b.outputText || b.content;
-    }).join('\n\n');
+    const finalOutput = blocks.map(b => blockOutputText(b) || b.content).join('\n\n');
     await currentProjectStore.updateChapter(selectedChapter.id, {
       blocks,
       outputText: finalOutput,
@@ -232,17 +318,32 @@
     });
   }
 
-  /** Called by BlockEditor when user edits source blocks */
+  /** Called by BlockEditor when user edits source blocks (on blur/paste/Enter only).
+   * Because BlockEditor uses bind:blocks, state is already synced. We compare against
+   * the originalContent snapshot (baseline from last processing) instead of old state.
+   */
   async function onBlocksChange(/** @type {Block[]} */ newBlocks) {
-    // mark blocks whose content changed and had output as outOfSync
-    blocks = newBlocks.map((b, i) => {
-      const old = blocks[i];
-      if (old && old.id === b.id && old.content !== b.content && b.outputText) {
-        return { ...b, outOfSync: true };
+    let hasChanges = false;
+    const updated = newBlocks.map((nb) => {
+      const hasOutput = !!nb.outputText || !!nb.editedText;
+      const contentDrifted = nb.originalContent !== undefined && nb.content !== nb.originalContent;
+
+      // Mark outOfSync when source drifts from snapshot
+      if (hasOutput && contentDrifted && !nb.outOfSync) {
+        hasChanges = true;
+        return { ...nb, outOfSync: true };
       }
-      return b;
+      // Clear outOfSync when content matches snapshot again
+      if (hasOutput && !contentDrifted && nb.outOfSync) {
+        hasChanges = true;
+        return { ...nb, outOfSync: false };
+      }
+      return nb;
     });
-    await saveBlocks();
+    if (hasChanges) {
+      blocks = updated;
+      await saveBlocks();
+    }
   }
 
   function getSystemPrompt() {
@@ -317,7 +418,8 @@
           const { wordChanges, wsChanges } = countChanges(block.content, output);
           runWordChanges += wordChanges;
           runWsChanges += wsChanges;
-          blocks[idx] = { ...blocks[idx], outputText: output, status: 'pending', editedText: null, outOfSync: false };
+          // Save with snapshot so drift detection works afterwards
+          blocks[idx] = saveSnapshot({ ...blocks[idx], outputText: output, status: 'pending', editedText: null, outOfSync: false });
           blocks = [...blocks];
           await saveBlocks();
         } catch (/** @type {any} */ err) {
@@ -411,10 +513,16 @@
     showNewChapterModal = false;
   }
 
-  async function deleteChapter(/** @type {any} */ _chapter) {
-    if (!confirm(`حذف فصل «${_chapter.title}»؟`)) return;
-    await currentProjectStore.deleteChapter(_chapter.id);
-    if (selectedChapter?.id === _chapter.id) { selectedChapter = null; blocks = []; }
+  function requestDeleteChapter(/** @type {any} */ chapter) {
+    chapterToDelete = chapter;
+  }
+
+  async function confirmDeleteChapter() {
+    if (!chapterToDelete) return;
+    const target = chapterToDelete;
+    chapterToDelete = null;
+    await currentProjectStore.deleteChapter(target.id);
+    if (selectedChapter?.id === target.id) { selectedChapter = null; blocks = []; }
   }
 
   function confirmReset() { showResetConfirm = true; }
@@ -450,7 +558,7 @@
               {/if}
             </div>
           </button>
-          <button onclick={() => deleteChapter(chapter)} title="حذف فصل"
+          <button onclick={() => requestDeleteChapter(chapter)} title="حذف فصل"
             class="p-1.5 ml-1 opacity-0 group-hover:opacity-100 transition-opacity {selectedChapter?.id === chapter.id ? 'text-primary-foreground/70 hover:text-primary-foreground' : 'text-muted-foreground hover:text-destructive'}">
             <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
           </button>
@@ -599,13 +707,49 @@
                 <span class="text-xs font-medium text-muted-foreground">متن اصلی</span>
               </div>
               <div bind:this={sourceScrollEl} onscroll={onSourceScroll} class="flex-1 overflow-y-auto p-3">
-                <BlockEditor
-                  bind:blocks
-                  readonly={processing}
-                  onChange={onBlocksChange}
-                  hoveredBlockId={hoveredBlockId}
-                  onHover={(id) => hoveredBlockId = id}
-                />
+                {#if showDiff}
+                  <!-- Diff mode: read-only source view showing where the AI changed things.
+                       Words marked red were modified/removed by the AI editor. -->
+                  <div class="space-y-1">
+                    {#each blocks as block (block.id)}
+                      {@const output = blockOutputText(block)}
+                      {@const srcSide = output ? splitDiff(block.content, output).srcSide : null}
+                      <!-- svelte-ignore a11y_no_static_element_interactions -->
+                      <div
+                        class="rounded-lg px-2 py-1.5 transition-colors {hoveredBlockId === block.id ? 'bg-muted/40 ring-1 ring-primary/15' : ''} {block.outOfSync ? 'ring-1 ring-amber-300 dark:ring-amber-700' : ''}"
+                        onmouseenter={() => hoveredBlockId = block.id}
+                        onmouseleave={() => hoveredBlockId = ''}
+                      >
+                        {#if block.outOfSync}
+                          <div class="text-[10px] text-amber-700 dark:text-amber-300 mb-1 flex items-center gap-1">
+                            <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="10"/></svg>
+                            متن اصلی پس از ویرایش تغییر کرده — خارج از سینک
+                          </div>
+                        {/if}
+                        {#if srcSide}
+                          <p class="text-sm leading-relaxed whitespace-pre-wrap" dir="auto">
+                            {#each srcSide as seg}
+                              {#if seg.type === 'equal'}<span>{seg.text}</span>
+                              {:else}<span class="bg-red-100 dark:bg-red-950/50 text-red-700 dark:text-red-400 rounded px-0.5" title="در متن ویرایش‌شده تغییر/اصلاح شده">{seg.text}</span>
+                              {/if}
+                            {/each}
+                          </p>
+                        {:else}
+                          <!-- No output yet: plain source -->
+                          <p class="text-sm leading-relaxed whitespace-pre-wrap" dir="auto">{block.content}</p>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                {:else}
+                  <BlockEditor
+                    bind:blocks
+                    readonly={processing}
+                    onChange={onBlocksChange}
+                    hoveredBlockId={hoveredBlockId}
+                    onHover={(id) => hoveredBlockId = id}
+                  />
+                {/if}
               </div>
             </div>
 
@@ -633,27 +777,49 @@
                 {#each blocks as block, idx (block.id)}
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
                   <div
-                    class="group/out relative rounded-lg px-1 py-0.5 transition-colors min-h-[1.5rem]
-                      {hoveredBlockId === block.id ? 'bg-primary/5 ring-1 ring-primary/20' : 'hover:bg-muted/20'}
-                      {block.outOfSync ? 'opacity-50' : ''}"
+                    class="group/out relative rounded-lg px-2 py-1.5 transition-colors min-h-[1.5rem]
+                      {hoveredBlockId === block.id ? 'bg-muted/40 ring-1 ring-primary/15' : 'hover:bg-muted/20'}"
                     onmouseenter={() => hoveredBlockId = block.id}
                     onmouseleave={() => hoveredBlockId = ''}
                   >
+                    <!-- Unified modification indicator (source drift + manual edit) -->
+                    {#if !processing}
+                      {@const mods = checkModifications(block)}
+                      {#if (mods.hasChanges || block.outOfSync) && block.outputText}
+                      <div class="flex items-center gap-2 mb-1.5 px-1 py-0.5 rounded {block.outOfSync ? 'bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800' : 'bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800'}">
+                        {#if mods.contentChanged || block.outOfSync}
+                          <span class="text-[10px] text-amber-700 dark:text-amber-300 flex items-center gap-1" title="متن اصلی نسبت به آخرین نسخه پردازش‌شده تغییر کرده">
+                            <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                            اصل تغییر کرد
+                          </span>
+                        {/if}
+                        {#if mods.outputChanged}
+                          <span class="text-[10px] text-purple-700 dark:text-purple-300 flex items-center gap-1" title="خروجی دستی ویرایش شده">
+                            <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                            ویرایش شد
+                          </span>
+                        {/if}
+                        <div class="flex items-center gap-1 mr-auto">
+                          {#if block.outOfSync}
+                            <button onclick={() => reprocessSingleBlock(block)}
+                              class="text-[10px] px-2 py-0.5 rounded bg-amber-500 text-white hover:bg-amber-600 transition-colors" title="پردازش مجدد این بند با توجه به تغییرات">
+                              سینک این بند
+                            </button>
+                          {/if}
+                          <button onclick={() => { blocks = blocks.map(b => b.id === block.id ? { ...saveSnapshot(b), outOfSync: false } : b); saveBlocks(); }}
+                            class="text-[10px] px-2 py-0.5 rounded bg-green-600 text-white hover:bg-green-700 transition-colors" title="تایید دستی: این نسخه به عنوان نسخه نهایی ثبت شود">
+                            تایید دستی
+                          </button>
+                        </div>
+                      </div>
+                      {/if}
+                    {/if}
+
                     {#if processing && processingIndex === idx && !block.outputText}
                       <div class="space-y-1.5 py-1">
                         <div class="h-3 bg-muted animate-pulse rounded w-4/5"></div>
                         <div class="h-3 bg-muted animate-pulse rounded w-3/5"></div>
                         <div class="h-3 bg-muted animate-pulse rounded w-4/5"></div>
-                      </div>
-                    {:else if block.outOfSync}
-                      <div class="flex items-center justify-between">
-                        <span class="text-xs text-amber-600 dark:text-amber-400 italic">منتظر سینک...</span>
-                        {#if !processing}
-                          <button onclick={() => reprocessSingleBlock(block)}
-                            class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 hover:bg-amber-200 transition-colors">
-                            سینک این بند
-                          </button>
-                        {/if}
                       </div>
                     {:else if block.outputText}
                       <!-- Inline edit mode for output block -->
@@ -661,7 +827,7 @@
                         <div class="flex items-center gap-1.5 mb-1">
                           <button onclick={async () => {
                               const idx2 = blocks.findIndex(b => b.id === block.id);
-                              blocks[idx2] = { ...blocks[idx2], status: 'edited', editedText: block._editVal ?? block.outputText, _editing: false, _editVal: undefined };
+                              blocks[idx2] = { ...blocks[idx2], status: 'edited', editedText: block._editVal ?? blockOutputText(block), _editing: false, _editVal: undefined };
                               blocks = [...blocks];
                               await saveBlocks();
                             }}
@@ -682,13 +848,13 @@
                             const idx2 = blocks.findIndex(b => b.id === block.id);
                             blocks[idx2] = { ...blocks[idx2], _editVal: /** @type {any} */ (e.target)?.textContent ?? '' };
                           }}
-                        >{block.status === 'edited' ? (block.editedText ?? block.outputText) : block.outputText}</div>
+                        >{blockOutputText(block)}</div>
                       {:else}
                         <!-- Edit pencil on hover -->
                         {#if !processing}
                           <button onclick={() => {
                               const idx2 = blocks.findIndex(b => b.id === block.id);
-                              blocks[idx2] = { ...blocks[idx2], _editing: true, _editVal: block.status === 'edited' ? (block.editedText ?? block.outputText) : block.outputText };
+                              blocks[idx2] = { ...blocks[idx2], _editing: true, _editVal: blockOutputText(block) };
                               blocks = [...blocks];
                             }}
                             class="absolute top-1 left-1 p-1 rounded opacity-0 group-hover/out:opacity-100 transition-opacity text-muted-foreground hover:text-foreground hover:bg-muted"
@@ -706,15 +872,22 @@
                         <div ondblclick={() => {
                             if (processing) return;
                             const idx2 = blocks.findIndex(b => b.id === block.id);
-                            blocks[idx2] = { ...blocks[idx2], _editing: true, _editVal: block.status === 'edited' ? (block.editedText ?? block.outputText) : block.outputText };
+                            blocks[idx2] = { ...blocks[idx2], _editing: true, _editVal: blockOutputText(block) };
                             blocks = [...blocks];
                           }}>
-                          {#if block.status === 'edited'}
-                            <p class="text-sm leading-relaxed whitespace-pre-wrap" dir="auto">{block.editedText ?? block.outputText}</p>
-                          {:else if showDiff}
-                            <DiffView source={block.content} output={block.outputText} side="output" />
+                          {#if showDiff}
+                            <!-- Output-side diff: show edited text with inserted/changed parts highlighted in green.
+                                 Words marked green are what the AI added/changed compared to the source. -->
+                            {@const outSide = splitDiff(block.content, blockOutputText(block)).outSide}
+                            <p class="text-sm leading-relaxed whitespace-pre-wrap" dir="auto">
+                              {#each outSide as seg}
+                                {#if seg.type === 'equal'}<span>{seg.text}</span>
+                                {:else}<span class="bg-green-100 dark:bg-green-950/50 text-green-800 dark:text-green-300 rounded px-0.5" title="اصلاح/اضافه‌شده توسط ویراستار">{seg.text}</span>
+                                {/if}
+                              {/each}
+                            </p>
                           {:else}
-                            <p class="text-sm leading-relaxed whitespace-pre-wrap" dir="auto">{block.outputText}</p>
+                            <p class="text-sm leading-relaxed whitespace-pre-wrap" dir="auto">{blockOutputText(block)}</p>
                           {/if}
                         </div>
                       {/if}
@@ -874,6 +1047,26 @@
         <button onclick={() => showNewChapterModal = false} class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">انصراف</button>
         <button onclick={addChapter} disabled={!newChapterTitle.trim()}
           class="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-40 transition-colors">ایجاد</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Chapter Delete Confirm Modal -->
+{#if chapterToDelete}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={() => chapterToDelete = null}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="bg-card border rounded-xl p-6 w-80 mx-4 shadow-xl" onclick={(e) => e.stopPropagation()}>
+      <h3 class="text-base font-semibold mb-2" dir="rtl">حذف فصل؟</h3>
+      <p class="text-sm text-muted-foreground mb-5" dir="rtl">
+        فصل «{chapterToDelete.title}» و تمام محتوای آن به‌طور کامل حذف می‌شود.
+      </p>
+      <div class="flex gap-2 justify-end" dir="rtl">
+        <button onclick={() => chapterToDelete = null} class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">انصراف</button>
+        <button onclick={confirmDeleteChapter} class="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-sm hover:bg-destructive/90 transition-colors">بله، حذف کن</button>
       </div>
     </div>
   </div>
