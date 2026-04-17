@@ -12,15 +12,41 @@
    *   onChange?: (blocks: Block[]) => void,
    *   hoveredBlockId?: string,
    *   onHover?: (id: string) => void,
+   *   sentenceHighlight?: Record<string, number>,
+   *   onSentenceHover?: (blockId: string, idx: number) => void,
    * }}
    */
-  let { blocks = $bindable([]), readonly = false, onChange, hoveredBlockId = '', onHover } = $props();
+  let { blocks = $bindable([]), readonly = false, onChange, hoveredBlockId = '', onHover, sentenceHighlight = {}, onSentenceHover } = $props();
 
-  /** @type {HTMLElement[]} */
-  let blockRefs = $state([]);
+  /** @type {Record<string, HTMLElement>} */
+  let blockRefs = $state({});
   /** @type {string|null} */
   let slashMenuBlockId = $state(null);
   let slashMenuPos = $state({ top: 0, left: 0 });
+  /** prevents oninput from firing after Enter keydown */
+  let suppressNextInput = false;
+
+  /**
+   * Sync external content changes (e.g., from translation completion, chapter switch) 
+   * to DOM only when block is NOT focused, to avoid overwriting user's in-progress typing.
+   */
+  $effect(() => {
+    for (const block of blocks) {
+      const el = blockRefs[block.id];
+      if (!el) continue;
+      // Skip if user is actively editing this element
+      if (document.activeElement === el) continue;
+      const domContent = el.textContent || '';
+      if (domContent !== block.content) {
+        el.textContent = block.content;
+      }
+    }
+  });
+
+  /** @param {string} text */
+  function splitSentences(text) {
+    return (text || '').split(/(?<=[.!?؟。…]\s*)|(?<=\n)/).map((/** @type {string} */ s) => s.trim()).filter(Boolean);
+  }
 
   const BLOCK_TYPES = [
     { type: 'paragraph', label: 'متن عادی', icon: '¶' },
@@ -39,12 +65,11 @@
     onChange?.(blocks);
   }
 
-  /** @param {number} idx */
-  async function focusBlock(idx) {
+  /** @param {string} id */
+  async function focusBlock(id) {
     await tick();
-    blockRefs[idx]?.focus();
-    // Move cursor to end
-    const el = blockRefs[idx];
+    const el = blockRefs[id];
+    el?.focus();
     if (el) {
       const range = document.createRange();
       range.selectNodeContents(el);
@@ -61,7 +86,7 @@
     if (willGoOutOfSync && !blocks[idx].outOfSync) {
       if (!confirm('این بند خروجی AI دارد. با ویرایش، خروجی از سینک خارج می‌شود. ادامه می‌دهید؟')) {
         // Restore original content in DOM
-        const el = blockRefs[idx];
+        const el = blockRefs[blocks[idx].id];
         if (el) el.textContent = blocks[idx].content;
         return;
       }
@@ -76,7 +101,7 @@
     const newBlock = /** @type {Block} */ ({ id: uid(), type: 'paragraph', content: '', status: 'pending' });
     blocks = [...blocks.slice(0, idx + 1), newBlock, ...blocks.slice(idx + 1)];
     notify();
-    focusBlock(idx + 1);
+    focusBlock(newBlock.id);
   }
 
   /** @param {number} idx */
@@ -86,11 +111,14 @@
       blocks[0] = { ...blocks[0], content: '' };
       blocks = [...blocks];
       notify();
+      const el = blockRefs[blocks[0].id];
+      if (el) { el.textContent = ''; el.focus(); }
       return;
     }
+    const focusId = idx > 0 ? blocks[idx - 1].id : blocks[1].id;
     blocks = blocks.filter((_, i) => i !== idx);
     notify();
-    focusBlock(Math.max(0, idx - 1));
+    focusBlock(focusId);
   }
 
   /**
@@ -98,19 +126,18 @@
    * @param {number} idx
    */
   function handleKeydown(e, idx) {
-    const el = blockRefs[idx];
+    const el = blockRefs[blocks[idx]?.id ?? ''];
     const content = el?.textContent || '';
 
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      // Commit current content
+      suppressNextInput = true;
       updateContent(idx, content);
       addBlockAfter(idx);
     } else if (e.key === 'Backspace' && content === '') {
       e.preventDefault();
       deleteBlock(idx);
     } else if (e.key === '/') {
-      // Show slash menu
       const rect = el?.getBoundingClientRect();
       if (rect) {
         slashMenuBlockId = blocks[idx].id;
@@ -120,10 +147,10 @@
       slashMenuBlockId = null;
     } else if (e.key === 'ArrowUp' && idx > 0) {
       e.preventDefault();
-      focusBlock(idx - 1);
+      focusBlock(blocks[idx - 1].id);
     } else if (e.key === 'ArrowDown' && idx < blocks.length - 1) {
       e.preventDefault();
-      focusBlock(idx + 1);
+      focusBlock(blocks[idx + 1].id);
     }
   }
 
@@ -132,8 +159,44 @@
    * @param {number} idx
    */
   function handleInput(e, idx) {
-    const el = blockRefs[idx];
-    updateContent(idx, el?.textContent || '');
+    if (suppressNextInput) { suppressNextInput = false; return; }
+    // DO NOT touch blocks state here - it causes cursor jumping and double-typing.
+    // DO NOT call notify() either - that would trigger parent re-render and may
+    // overwrite the DOM content we just typed.
+    // Sync happens on blur/Enter/paste only.
+  }
+
+  /**
+   * @param {FocusEvent} e
+   * @param {number} idx
+   */
+  function handleBlur(e, idx) {
+    const el = blockRefs[blocks[idx]?.id ?? ''];
+    const content = (el?.textContent || '').replace(/\n/g, '');
+    // Only update with outOfSync check on blur - this is when we sync DOM to state
+    if (content !== blocks[idx]?.content) {
+      updateContent(idx, content);
+    }
+  }
+
+  /**
+   * @param {ClipboardEvent} e
+   * @param {number} idx
+   */
+  function handlePaste(e, idx) {
+    e.preventDefault();
+    const text = e.clipboardData?.getData('text/plain') || '';
+    const paragraphs = text.split(/\n+/).map(p => p.trim()).filter(Boolean);
+    if (paragraphs.length <= 1) {
+      document.execCommand('insertText', false, text.replace(/\n/g, ' '));
+      return;
+    }
+    const before = blocks.slice(0, idx);
+    const after = blocks.slice(idx + 1);
+    const updated = { ...blocks[idx], content: paragraphs[0] };
+    const newBlocks = paragraphs.slice(1).map(p => (/** @type {Block} */ ({ id: uid(), type: 'paragraph', content: p, status: 'pending' })));
+    blocks = [...before, updated, ...newBlocks, ...after];
+    notify();
   }
 
   /**
@@ -143,13 +206,47 @@
   function changeBlockType(blockId, type) {
     const idx = blocks.findIndex(b => b.id === blockId);
     if (idx === -1) return;
-    // Strip slash if user typed it
     const content = blocks[idx].content.replace(/^\/\S*\s?/, '');
     blocks[idx] = { ...blocks[idx], type: /** @type {Block['type']} */ (type), content };
     blocks = [...blocks];
     slashMenuBlockId = null;
     notify();
-    focusBlock(idx);
+    focusBlock(blockId);
+  }
+
+  /** @param {string} blockId */
+  function deleteBlockById(blockId) {
+    const idx = blocks.findIndex(b => b.id === blockId);
+    if (idx !== -1) { slashMenuBlockId = null; deleteBlock(idx); }
+  }
+
+  /**
+   * Detect which sentence index is under the mouse pointer for a block.
+   * @param {MouseEvent} e
+   * @param {string} blockId
+   */
+  function detectSentenceHover(e, blockId) {
+    if (!onSentenceHover) return;
+    const block = blocks.find(b => b.id === blockId);
+    if (!block) return;
+    const sentences = splitSentences(block.content);
+    if (sentences.length <= 1) { onSentenceHover(blockId, 0); return; }
+    /** @type {any} */
+    const doc = document;
+    let charOffset = 0;
+    if (doc.caretPositionFromPoint) {
+      const pos = doc.caretPositionFromPoint(e.clientX, e.clientY);
+      charOffset = pos?.offset ?? 0;
+    } else if (doc.caretRangeFromPoint) {
+      const r = doc.caretRangeFromPoint(e.clientX, e.clientY);
+      charOffset = r?.startOffset ?? 0;
+    }
+    let cum = 0;
+    for (let i = 0; i < sentences.length; i++) {
+      cum += sentences[i].length + 1;
+      if (charOffset < cum) { onSentenceHover(blockId, i); return; }
+    }
+    onSentenceHover(blockId, sentences.length - 1);
   }
 
   /** @param {Block} block */
@@ -210,16 +307,29 @@
           <span class="absolute -top-1 right-0 text-[9px] text-amber-500 font-medium leading-none">● out-of-sync</span>
         {/if}
 
+        <!-- Sentence highlight overlay (translation→source sync) -->
+        {#if sentenceHighlight[block.id] !== undefined && sentenceHighlight[block.id] >= 0}
+          {@const sentences = splitSentences(block.content)}
+          {@const hi = sentenceHighlight[block.id]}
+          <div class={blockClasses(block) + ' absolute inset-0 pointer-events-none select-none'} aria-hidden="true">{#each sentences as sent, si}<span class="rounded px-0.5 {si === hi ? 'bg-yellow-200 dark:bg-yellow-800/60' : ''}">{sent} </span>{/each}</div>
+        {/if}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <!-- NOTE: NO reactive {block.content} inside - $effect syncs DOM when needed.
+             This prevents Svelte from overwriting user's in-progress typing. -->
         <div
-          bind:this={blockRefs[idx]}
+          bind:this={blockRefs[block.id]}
           contenteditable={!readonly}
           dir="auto"
-          class={blockClasses(block)}
+          class={blockClasses(block) + (sentenceHighlight[block.id] !== undefined && sentenceHighlight[block.id] >= 0 ? ' text-transparent caret-current' : '')}
           data-placeholder={block.content === '' ? (block.type === 'paragraph' ? 'بنویسید یا / بزنید برای دستورات...' : block.type) : ''}
+          data-empty={block.content === '' ? 'true' : 'false'}
           onkeydown={(e) => handleKeydown(e, idx)}
           oninput={(e) => handleInput(/** @type {any} */ (e), idx)}
-        >{block.content}</div>
+          onblur={(e) => handleBlur(/** @type {any} */ (e), idx)}
+          onpaste={(e) => handlePaste(/** @type {any} */ (e), idx)}
+          onmousemove={(e) => detectSentenceHover(/** @type {MouseEvent} */ (e), block.id)}
+          onmouseleave={() => onSentenceHover?.(block.id, -1)}
+        ></div>
       </div>
     </div>
   {/each}
@@ -228,7 +338,7 @@
   {#if blocks.length === 0 && !readonly}
     <button
       class="w-full text-right text-sm text-muted-foreground px-3 py-2 rounded hover:bg-muted/30 transition-colors"
-      onclick={() => { blocks = [{ id: uid(), type: 'paragraph', content: '', status: 'pending' }]; notify(); focusBlock(0); }}
+      onclick={() => { const b = { id: uid(), type: 'paragraph', content: '', status: 'pending' }; blocks = [b]; notify(); focusBlock(b.id); }}
     >
       + بلاک جدید
     </button>
@@ -252,11 +362,19 @@
         <span>{t.label}</span>
       </button>
     {/each}
+    <div class="border-t my-1"></div>
+    <button
+      class="w-full text-right px-3 py-1.5 hover:bg-destructive/10 text-destructive flex items-center gap-2"
+      onclick={() => deleteBlockById(slashMenuBlockId ?? '')}
+    >
+      <svg class="w-3.5 h-3.5 text-destructive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+      <span>حذف بند</span>
+    </button>
   </div>
 {/if}
 
 <style>
-  [contenteditable]:empty::before {
+  [contenteditable][data-empty='true']::before {
     content: attr(data-placeholder);
     color: hsl(var(--muted-foreground) / 0.5);
     pointer-events: none;

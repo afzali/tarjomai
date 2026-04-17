@@ -6,6 +6,20 @@
  * @returns {string}
  */
 function getFinalOutputText(chapter) {
+  // Use blocks-based output if available (new editor format)
+  if (chapter.blocks && chapter.blocks.length > 0) {
+    return chapter.blocks.map(b => {
+      // If block has edited translation, use it
+      if (b.status === 'edited' && b.editedTranslation) return b.editedTranslation;
+      // If block has sentences, join them
+      if (b.sentences && b.sentences.length > 0) {
+        return b.sentences.map(s => s.translation).filter(Boolean).join(' ');
+      }
+      // Fallback to legacy fields
+      return b.translation || b.content || '';
+    }).join('\n\n');
+  }
+  // Legacy segmentData format
   if (chapter.segmentData && chapter.segmentData.length > 0) {
     return chapter.segmentData.map(s => {
       if (s.status === 'rejected') return s.sourceText;
