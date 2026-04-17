@@ -6,6 +6,7 @@
 	import { currentProjectStore } from '$lib/stores/currentProject.store.js';
 	import { settingsStore } from '$lib/stores/settings.store.js';
 	import { openrouterService } from '$lib/services/openrouter.service.js';
+	import WizardShell from '$lib/components/tarjomai/wizard-shell.svelte';
 	import { Button } from '$lib/components/ui-rtl/button';
 	import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '$lib/components/ui-rtl/card';
 	import { Checkbox } from '$lib/components/ui-rtl/checkbox';
@@ -23,6 +24,15 @@
 	let sampleText = $state('');
 	let comparing = $state(false);
 	let results = $state([]);
+	let saving = $state(false);
+
+	// Wizard steps
+	const steps = [
+		{ id: 'analyze', label: 'تحلیل سبک', description: 'تحلیل سبک نگارش متن' },
+		{ id: 'compare', label: 'مقایسه مدل‌ها', description: 'مقایسه خروجی مدل‌های مختلف' },
+		{ id: 'judge', label: 'داوری', description: 'ارزیابی و انتخاب نهایی' }
+	];
+	let currentStepIndex = $state(1);
 
 	// Per-model progress tracking: { modelId, status: 'pending'|'loading'|'success'|'error'|'cancelled', error?, startTime?, elapsed? }
 	let modelStatuses = $state([]);
@@ -30,12 +40,14 @@
 	let abortControllers = $state({});
 	let elapsedTimers = $state({});
 
-	// Judge progress
-	let judgeStatus = $state('idle'); // 'idle' | 'loading' | 'success' | 'error'
-	let judgeError = $state('');
-
 	// Show translation prompt
 	let showTranslationPrompt = $state(false);
+
+	// Manual translations
+	let manualTranslations = $state([]);
+	let showManualForm = $state(false);
+	let newManualTitle = $state('');
+	let newManualText = $state('');
 
 	// Dynamic model list from OpenRouter API
 	let availableModels = $state(fallbackModels);
@@ -58,58 +70,6 @@
 
 	let selectedModels = $state(['anthropic/claude-sonnet-4', 'openai/gpt-4.1']);
 
-	// Manual translation entries
-	let manualTranslations = $state([]);
-	let newManualTitle = $state('');
-	let newManualText = $state('');
-	let showManualForm = $state(false);
-	let judgeSearchQuery = $state('');
-
-	const filteredJudgeModels = $derived(
-		judgeSearchQuery.trim()
-			? availableModels.filter(m =>
-				m.name.toLowerCase().includes(judgeSearchQuery.toLowerCase()) ||
-				m.id.toLowerCase().includes(judgeSearchQuery.toLowerCase()) ||
-				m.provider.toLowerCase().includes(judgeSearchQuery.toLowerCase())
-			)
-			: availableModels
-	);
-
-	// Judge feature
-	let judgeModel = $state('anthropic/claude-sonnet-4');
-	let judging = $state(false);
-	let judgeResults = $state(null);
-	let showJudgePrompt = $state(false);
-	let judgePrompt = $state(`You are an expert translation evaluator. Compare the following translations and provide a detailed analysis.
-
-Source text: {sourceText}
-Source language: {sourceLanguage}
-Target language: {targetLanguage}
-
-Translations to compare:
-{translations}
-
-For each translation, provide:
-1. Strengths (نقاط قوت)
-2. Weaknesses (نقاط ضعف)
-3. Overall rating (1-5 stars)
-
-Then provide a final recommendation for the best translation.
-
-Respond in JSON format:
-{
-  "evaluations": [
-    {
-      "modelId": "model-id",
-      "strengths": ["..."],
-      "weaknesses": ["..."],
-      "rating": 4
-    }
-  ],
-  "recommendation": "model-id",
-  "summary": "Overall analysis summary in Persian"
-}`);
-
 	onMount(async () => {
 		const data = await currentProjectStore.load(parseInt(projectId));
 		if (data) {
@@ -121,7 +81,6 @@ Respond in JSON format:
 			if (savedData) {
 				if (savedData.sampleText) sampleText = savedData.sampleText;
 				if (savedData.results) results = savedData.results;
-				if (savedData.judgeResults) judgeResults = savedData.judgeResults;
 				if (savedData.manualTranslations) manualTranslations = savedData.manualTranslations;
 			}
 		}
@@ -221,7 +180,6 @@ IMPORTANT OUTPUT RULES:
 		
 		comparing = true;
 		results = [];
-		judgeResults = null;
 		currentModelIndex = -1;
 		abortControllers = {};
 
@@ -331,176 +289,69 @@ IMPORTANT OUTPUT RULES:
 		results[index].rating = rating;
 		results = [...results];
 		// Save updated ratings
-		projectsService.saveWizardStepData(parseInt(projectId), 'compare', { results });
+		projectsService.saveWizardStepData(parseInt(projectId), 'compare', { results, manualTranslations });
 	}
 
 	function setManualRating(index, rating) {
 		manualTranslations[index].rating = rating;
 		manualTranslations = [...manualTranslations];
-		projectsService.saveWizardStepData(parseInt(projectId), 'compare', { manualTranslations });
+		projectsService.saveWizardStepData(parseInt(projectId), 'compare', { results, manualTranslations });
 	}
 
 	function addManualTranslation() {
 		if (!newManualTitle.trim() || !newManualText.trim()) return;
 		manualTranslations = [...manualTranslations, {
-			id: `manual-${Date.now()}`,
 			modelId: `manual-${Date.now()}`,
 			modelName: newManualTitle.trim(),
 			translation: newManualText.trim(),
-			error: null,
 			rating: 0,
-			isManual: true
+			error: null
 		}];
 		newManualTitle = '';
 		newManualText = '';
 		showManualForm = false;
-		projectsService.saveWizardStepData(parseInt(projectId), 'compare', { manualTranslations });
+		projectsService.saveWizardStepData(parseInt(projectId), 'compare', { results, manualTranslations });
 	}
 
 	function removeManualTranslation(index) {
 		manualTranslations = manualTranslations.filter((_, i) => i !== index);
-		projectsService.saveWizardStepData(parseInt(projectId), 'compare', { manualTranslations });
+		projectsService.saveWizardStepData(parseInt(projectId), 'compare', { results, manualTranslations });
 	}
 
-	function selectModel(modelId) {
-		// Update default model for project
-		projectsService.updateProject(parseInt(projectId), { defaultModel: modelId });
-		goto(`/projects/${projectId}/select-model?model=${encodeURIComponent(modelId)}`);
+	async function handleNext() {
+		saving = true;
+		await projectsService.updateSetupStep(parseInt(projectId), 'compare');
+		// Save all data for judge page
+		await projectsService.saveWizardStepData(parseInt(projectId), 'compare', { 
+			sampleText, 
+			results, 
+			manualTranslations
+		});
+		saving = false;
+		goto(`/projects/${projectId}/judge`);
 	}
 
-	// Combine AI results and manual translations for judging
-	const allTranslationsForJudge = $derived(
-		[...results.filter(r => r.translation && !r.error), ...manualTranslations.filter(m => m.translation)]
-	);
-
-	async function judgeTranslations() {
-		if (allTranslationsForJudge.length < 2) return;
-
-		judging = true;
-		judgeResults = null;
-		judgeStatus = 'loading';
-		judgeError = '';
-
-		const translationsText = allTranslationsForJudge.map((r, i) => 
-			`[${i + 1}] ${r.isManual ? 'Manual' : 'Model'}: ${r.modelName}\nTranslation: ${r.translation}`
-		).join('\n\n');
-
-		const finalPrompt = judgePrompt
-			.replace('{sourceText}', sampleText)
-			.replace('{sourceLanguage}', project?.sourceLanguage || 'English')
-			.replace('{targetLanguage}', project?.targetLanguage || 'Persian')
-			.replace('{translations}', translationsText);
-
-		const result = await openrouterService.sendMessage(
-			settings.openRouterApiKey,
-			judgeModel,
-			[{ role: 'user', content: finalPrompt }],
-			{ max_tokens: 8192 }
-		);
-
-		if (result.success) {
-			judgeStatus = 'success';
-			try {
-				let jsonContent = result.content.trim();
-				
-				// Extract JSON from markdown code blocks (```json ... ``` or ``` ... ```)
-				const codeBlockMatch = jsonContent.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-				if (codeBlockMatch) {
-					jsonContent = codeBlockMatch[1].trim();
-				}
-				
-				// If no code block found, try to find JSON object directly
-				if (!jsonContent.startsWith('{')) {
-					const jsonStart = jsonContent.indexOf('{');
-					if (jsonStart !== -1) {
-						jsonContent = jsonContent.substring(jsonStart);
-					}
-				}
-				
-				// Fix truncated JSON: ensure proper closing
-				if (!jsonContent.endsWith('}')) {
-					// Try to find the last complete evaluation entry and close the JSON
-					const lastCompleteEval = jsonContent.lastIndexOf('}');
-					if (lastCompleteEval !== -1) {
-						jsonContent = jsonContent.substring(0, lastCompleteEval + 1);
-						// Count unclosed brackets and braces
-						const openBraces = (jsonContent.match(/{/g) || []).length;
-						const closeBraces = (jsonContent.match(/}/g) || []).length;
-						const openBrackets = (jsonContent.match(/\[/g) || []).length;
-						const closeBrackets = (jsonContent.match(/]/g) || []).length;
-						jsonContent += ']'.repeat(Math.max(0, openBrackets - closeBrackets));
-						jsonContent += '}'.repeat(Math.max(0, openBraces - closeBraces));
-					}
-				}
-				
-				const parsed = JSON.parse(jsonContent);
-				judgeResults = parsed;
-
-				// Apply ratings from judge to all translations (AI + manual)
-				if (parsed.evaluations) {
-					const validAiResults = results.filter(r => r.translation && !r.error);
-					const validManual = manualTranslations.filter(m => m.translation);
-					let evalIdx = 0;
-
-					// Apply to AI results
-					for (let i = 0; i < results.length; i++) {
-						if (results[i].translation && !results[i].error && evalIdx < parsed.evaluations.length) {
-							results[i].rating = parsed.evaluations[evalIdx].rating || 0;
-							results[i].strengths = parsed.evaluations[evalIdx].strengths || [];
-							results[i].weaknesses = parsed.evaluations[evalIdx].weaknesses || [];
-							evalIdx++;
-						}
-					}
-					results = [...results];
-
-					// Apply to manual translations
-					for (let i = 0; i < manualTranslations.length; i++) {
-						if (manualTranslations[i].translation && evalIdx < parsed.evaluations.length) {
-							manualTranslations[i].rating = parsed.evaluations[evalIdx].rating || 0;
-							manualTranslations[i].strengths = parsed.evaluations[evalIdx].strengths || [];
-							manualTranslations[i].weaknesses = parsed.evaluations[evalIdx].weaknesses || [];
-							evalIdx++;
-						}
-					}
-					manualTranslations = [...manualTranslations];
-				}
-				
-				// Save all data
-				await projectsService.saveWizardStepData(parseInt(projectId), 'compare', { 
-					results, 
-					judgeResults: parsed,
-					manualTranslations
-				});
-
-			} catch (e) {
-				console.error('JSON Parse Error:', e);
-				console.error('Raw content:', result.content);
-				judgeStatus = 'error';
-				judgeError = `خطا در پردازش نتیجه داوری: ${e.message}`;
-				judgeResults = { 
-					error: `خطا در پردازش نتیجه داوری: ${e.message}. احتمالاً پاسخ مدل بریده شده یا فرمت JSON نامعتبر است. لطفاً دوباره تلاش کنید یا مدل داور را تغییر دهید.`, 
-					raw: result.content 
-				};
-			}
-		} else {
-			judgeStatus = 'error';
-			judgeError = result.error;
-			judgeResults = { error: result.error };
-		}
-
-		judging = false;
+	function handleBack() {
+		goto(`/projects/${projectId}/analyze`);
 	}
 
-	const judgeModelName = $derived(getModelName(judgeModel));
+	const totalTranslations = $derived(results.filter(r => r.translation && !r.error).length + manualTranslations.length);
+	const canProceed = $derived(totalTranslations >= 2);
 </script>
 
-<div class="container mx-auto py-8 px-4 max-w-6xl">
-	<div class="mb-8">
-		<h1 class="text-3xl font-bold">مقایسه مدل‌ها</h1>
-		<p class="text-muted-foreground mt-1">
-			چند مدل را امتحان کنید و بهترین را انتخاب کنید
-		</p>
-	</div>
+<WizardShell
+	{steps}
+	{currentStepIndex}
+	projectTitle={project?.title}
+	operationType="translation"
+	{saving}
+	{canProceed}
+	finishLabel="ادامه"
+	nextLabel="ادامه به داوری"
+	onBack={handleBack}
+	onNext={handleNext}
+>
+	<div class="space-y-6" dir="rtl">
 
 	<Card class="mb-6">
 		<CardHeader>
@@ -640,13 +491,13 @@ IMPORTANT OUTPUT RULES:
 		</CardContent>
 	</Card>
 
-	<!-- Manual Translation Entry Section -->
+	<!-- Manual Translation Entry -->
 	<Card class="mb-6">
 		<CardHeader>
 			<div class="flex items-center justify-between">
 				<div>
 					<CardTitle>✏️ ترجمه‌های دستی</CardTitle>
-					<CardDescription>نمونه ترجمه‌های دستی (مثلاً ترجمه مترجم فعلی) را اضافه کنید تا در مقایسه و داوری شرکت کنند</CardDescription>
+					<CardDescription>نمونه ترجمه‌های دستی (مثلاً ترجمه مترجم فعلی) را اضافه کنید</CardDescription>
 				</div>
 				<Button variant="outline" onclick={() => showManualForm = !showManualForm}>
 					{showManualForm ? 'بستن' : '+ افزودن ترجمه دستی'}
@@ -712,263 +563,41 @@ IMPORTANT OUTPUT RULES:
 	</Card>
 
 	{#if results.length > 0 || manualTranslations.length > 0}
-		<!-- Judge Section -->
-		<Card class="mb-6">
-			<CardHeader>
-				<CardTitle class="flex items-center gap-2">
-					⚖️ داوری با AI
-				</CardTitle>
-				<CardDescription>یک مدل را به عنوان داور انتخاب کنید تا ترجمه‌ها را ارزیابی کند</CardDescription>
-			</CardHeader>
-			<CardContent class="space-y-4">
-				<div class="flex flex-wrap items-end gap-4">
-					<div class="flex-1 min-w-[200px] space-y-2">
-						<Label class="mb-2 block">مدل داور</Label>
-						<Input
-							bind:value={judgeSearchQuery}
-							placeholder="جستجوی مدل داور..."
-							dir="auto"
-						/>
-						<Select.Root type="single" value={judgeModel} onValueChange={(v) => judgeModel = v}>
-							<Select.Trigger class="w-full">
-								{judgeModelName}
-							</Select.Trigger>
-							<Select.Content class="max-h-[300px] overflow-y-auto">
-								{#each filteredJudgeModels as model}
-									<Select.Item value={model.id} label={model.name}>{model.name}</Select.Item>
-								{/each}
-								{#if filteredJudgeModels.length === 0 && judgeSearchQuery.trim()}
-									<div class="p-2 text-sm text-muted-foreground text-center">مدلی پیدا نشد</div>
-								{/if}
-							</Select.Content>
-						</Select.Root>
-					</div>
-					<Button onclick={judgeTranslations} disabled={judging || allTranslationsForJudge.length < 2}>
-						{judging ? 'در حال داوری...' : 'شروع داوری'}
-					</Button>
-					<Button variant="outline" onclick={() => showJudgePrompt = !showJudgePrompt}>
-						{showJudgePrompt ? 'بستن پرامپت' : 'ویرایش پرامپت'}
-					</Button>
-				</div>
-
-				{#if judgeStatus !== 'idle'}
-					<div class="mt-3 flex items-center gap-2 text-sm p-3 rounded-lg border {judgeStatus === 'loading' ? 'bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800' : judgeStatus === 'success' ? 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800' : 'bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800'}">
-						{#if judgeStatus === 'loading'}
-							<span class="animate-spin">⏳</span>
-							<span>در حال ارسال به مدل داور ({judgeModelName})...</span>
-						{:else if judgeStatus === 'success'}
-							<span>✅</span>
-							<span class="text-green-700 dark:text-green-300">داوری با موفقیت انجام شد</span>
-						{:else if judgeStatus === 'error'}
-							<span>❌</span>
-							<span class="text-red-700 dark:text-red-300">خطا در داوری: {judgeError}</span>
-						{/if}
-					</div>
-				{/if}
-
-				{#if showJudgePrompt}
-					<div class="mt-4">
-						<Label class="mb-2 block">پرامپت داوری (قابل ویرایش)</Label>
-						<Textarea 
-							bind:value={judgePrompt}
-							rows={10}
-							class="font-mono text-sm"
-							dir="ltr"
-						/>
-						<p class="text-xs text-muted-foreground mt-1">
-							متغیرها: {'{sourceText}'}, {'{sourceLanguage}'}, {'{targetLanguage}'}, {'{translations}'}
-						</p>
-					</div>
-				{/if}
-
-				{#if judgeResults}
-					{#if judgeResults.error}
-						<div class="p-4 bg-red-50 dark:bg-red-950 rounded-lg border border-red-200 dark:border-red-800">
-							<p class="text-red-600 dark:text-red-400">{judgeResults.error}</p>
-							{#if judgeResults.raw}
-								<pre class="mt-2 text-xs overflow-auto">{judgeResults.raw}</pre>
-							{/if}
-						</div>
-					{:else}
-						<div class="p-4 bg-green-50 dark:bg-green-950 rounded-lg border border-green-200 dark:border-green-800">
-							<h4 class="font-medium text-green-800 dark:text-green-200 mb-2">خلاصه داوری</h4>
-							<p class="text-sm text-green-700 dark:text-green-300" dir="auto">{judgeResults.summary}</p>
-							{#if judgeResults.recommendation}
-								<p class="mt-2 text-sm font-medium text-green-800 dark:text-green-200">
-									پیشنهاد: {getModelName(judgeResults.recommendation) !== judgeResults.recommendation ? getModelName(judgeResults.recommendation) : (manualTranslations.find(m => m.modelId === judgeResults.recommendation)?.modelName || judgeResults.recommendation)}
-								</p>
-							{/if}
-						</div>
-					{/if}
-				{/if}
-			</CardContent>
-		</Card>
-
+		<h2 class="text-xl font-bold mb-4">نتایج مقایسه ({results.filter(r => r.translation && !r.error).length + manualTranslations.length} مورد)</h2>
 		<!-- Results Grid -->
 		<div class="grid gap-4 md:grid-cols-2">
 			{#each results as result, index}
-				<Card class="{judgeResults?.recommendation === result.modelId ? 'ring-2 ring-green-500' : ''}">
-					<CardHeader class="pb-2">
-						<div class="flex items-center justify-between">
-							<CardTitle class="text-lg">{result.modelName}</CardTitle>
-							<div class="flex items-center gap-2">
+				{#if result.translation && !result.error}
+					<Card>
+						<CardHeader class="pb-2">
+							<div class="flex items-center justify-between">
+								<CardTitle class="text-lg">{result.modelName}</CardTitle>
 								<span class="text-xs px-2 py-0.5 bg-purple-100 dark:bg-purple-900 text-purple-800 dark:text-purple-200 rounded-full">AI</span>
-								{#if judgeResults?.recommendation === result.modelId}
-									<span class="text-xs bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 px-2 py-1 rounded-full">
-										پیشنهاد داور
-									</span>
-								{/if}
 							</div>
-						</div>
-					</CardHeader>
-					<CardContent>
-						{#if result.error}
-							<p class="text-red-600 text-sm">{result.error}</p>
-						{:else}
+						</CardHeader>
+						<CardContent class="space-y-3">
 							<p class="text-sm whitespace-pre-wrap" dir="auto">{result.translation}</p>
-							
-							<!-- Strengths & Weaknesses from Judge -->
-							{#if result.strengths?.length > 0 || result.weaknesses?.length > 0}
-								<div class="mt-4 space-y-2">
-									{#if result.strengths?.length > 0}
-										<div class="text-sm">
-											<span class="font-medium text-green-600 dark:text-green-400">نقاط قوت:</span>
-											<ul class="list-disc list-inside mr-2 text-muted-foreground">
-												{#each result.strengths as strength}
-													<li>{strength}</li>
-												{/each}
-											</ul>
-										</div>
-									{/if}
-									{#if result.weaknesses?.length > 0}
-										<div class="text-sm">
-											<span class="font-medium text-red-600 dark:text-red-400">نقاط ضعف:</span>
-											<ul class="list-disc list-inside mr-2 text-muted-foreground">
-												{#each result.weaknesses as weakness}
-													<li>{weakness}</li>
-												{/each}
-											</ul>
-										</div>
-									{/if}
-								</div>
-							{/if}
-							
-							<div class="mt-4 flex items-center gap-2">
-								<span class="text-sm text-muted-foreground">امتیاز:</span>
-								{#each [1, 2, 3, 4, 5] as star}
-									<button 
-										class="text-xl {result.rating >= star ? 'text-yellow-500' : 'text-gray-300'}"
-										onclick={() => setRating(index, star)}
-									>
-										★
-									</button>
-								{/each}
-							</div>
-
-							<Button 
-								size="sm" 
-								class="mt-4"
-								onclick={() => selectModel(result.modelId)}
-							>
-								انتخاب این مدل
-							</Button>
-						{/if}
-					</CardContent>
-				</Card>
+						</CardContent>
+					</Card>
+				{/if}
 			{/each}
 
 			<!-- Manual Translation Cards -->
 			{#each manualTranslations as manual, index}
-				<Card class="border-blue-200 dark:border-blue-800 {judgeResults?.recommendation === manual.modelId ? 'ring-2 ring-green-500' : ''}">
+				<Card class="border-blue-200 dark:border-blue-800">
 					<CardHeader class="pb-2">
 						<div class="flex items-center justify-between">
 							<CardTitle class="text-lg">{manual.modelName}</CardTitle>
-							<div class="flex items-center gap-2">
-								<span class="text-xs px-2 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 rounded-full">دستی</span>
-								{#if judgeResults?.recommendation === manual.modelId}
-									<span class="text-xs bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 px-2 py-1 rounded-full">
-										پیشنهاد داور
-									</span>
-								{/if}
-							</div>
+							<span class="text-xs px-2 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 rounded-full">دستی</span>
 						</div>
 					</CardHeader>
-					<CardContent>
+					<CardContent class="space-y-3">
 						<p class="text-sm whitespace-pre-wrap" dir="auto">{manual.translation}</p>
-						
-						<!-- Strengths & Weaknesses from Judge -->
-						{#if manual.strengths?.length > 0 || manual.weaknesses?.length > 0}
-							<div class="mt-4 space-y-2">
-								{#if manual.strengths?.length > 0}
-									<div class="text-sm">
-										<span class="font-medium text-green-600 dark:text-green-400">نقاط قوت:</span>
-										<ul class="list-disc list-inside mr-2 text-muted-foreground">
-											{#each manual.strengths as strength}
-												<li>{strength}</li>
-											{/each}
-										</ul>
-									</div>
-								{/if}
-								{#if manual.weaknesses?.length > 0}
-									<div class="text-sm">
-										<span class="font-medium text-red-600 dark:text-red-400">نقاط ضعف:</span>
-										<ul class="list-disc list-inside mr-2 text-muted-foreground">
-											{#each manual.weaknesses as weakness}
-												<li>{weakness}</li>
-											{/each}
-										</ul>
-									</div>
-								{/if}
-							</div>
-						{/if}
-						
-						<div class="mt-4 flex items-center gap-2">
-							<span class="text-sm text-muted-foreground">امتیاز:</span>
-							{#each [1, 2, 3, 4, 5] as star}
-								<button 
-									class="text-xl {manual.rating >= star ? 'text-yellow-500' : 'text-gray-300'}"
-									onclick={() => setManualRating(index, star)}
-								>
-									★
-								</button>
-							{/each}
-						</div>
 					</CardContent>
 				</Card>
 			{/each}
 		</div>
 	{/if}
 
-	<!-- Wizard Progress -->
-	<div class="mt-8 mb-6 flex items-center justify-center gap-2">
-		<a 
-			href="/projects/{projectId}/analyze"
-			class="flex items-center gap-2 px-3 py-2 rounded-lg transition-colors bg-muted hover:bg-muted/80 text-muted-foreground"
-		>
-			<span class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold bg-background">1</span>
-			<span class="text-sm">تحلیل سبک</span>
-		</a>
-		<span class="mx-2 text-muted-foreground">→</span>
-		<div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground">
-			<span class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold bg-primary-foreground text-primary">2</span>
-			<span class="text-sm">مقایسه مدل‌ها</span>
-		</div>
-		<span class="mx-2 text-muted-foreground">→</span>
-		<a 
-			href="/projects/{projectId}"
-			class="flex items-center gap-2 px-3 py-2 rounded-lg transition-colors bg-muted hover:bg-muted/80 text-muted-foreground"
-		>
-			<span class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold bg-background">3</span>
-			<span class="text-sm">فضای کار</span>
-		</a>
 	</div>
-
-	<div class="flex justify-between">
-		<Button variant="outline" href="/projects/{projectId}/analyze">
-			← بازگشت به تحلیل سبک
-		</Button>
-		<Button href="/projects/{projectId}">
-			رفتن به فضای کار →
-		</Button>
-	</div>
-</div>
+</WizardShell>

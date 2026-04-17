@@ -273,8 +273,8 @@
   <!-- Top Bar -->
   <div class="flex items-center justify-between mb-4 flex-wrap gap-3">
     <div>
-      <h1 class="text-2xl font-bold">ترجمای</h1>
-      <p class="text-sm text-muted-foreground">پلتفرم هوشمند پردازش متن</p>
+      <h1 class="text-2xl font-bold">ویرای</h1>
+      <p class="text-sm text-muted-foreground">ویراستار هوشمند متن</p>
     </div>
     <div class="flex items-center gap-2 flex-wrap">
       <select

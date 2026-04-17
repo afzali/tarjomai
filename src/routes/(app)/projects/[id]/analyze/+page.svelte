@@ -6,6 +6,7 @@
 	import projectsService from '$lib/services/projects.service.js';
 	import { settingsStore } from '$lib/stores/settings.store.js';
 	import { openrouterService } from '$lib/services/openrouter.service.js';
+	import WizardShell from '$lib/components/tarjomai/wizard-shell.svelte';
 	import { Button } from '$lib/components/ui-rtl/button';
 	import { Textarea } from '$lib/components/ui-rtl/textarea';
 	import { Label } from '$lib/components/ui-rtl/label';
@@ -25,6 +26,15 @@
 	let analysisResult = $state(null);
 	let settings = $state(null);
 	let activeTab = $state('ai');
+	let saving = $state(false);
+
+	// Wizard steps
+	const steps = [
+		{ id: 'analyze', label: 'تحلیل سبک', description: 'تحلیل سبک نگارش متن' },
+		{ id: 'compare', label: 'مقایسه مدل‌ها', description: 'مقایسه خروجی مدل‌های مختلف' },
+		{ id: 'judge', label: 'داوری', description: 'ارزیابی و انتخاب نهایی' }
+	];
+	let currentStepIndex = $state(0);
 
 	// Model selection
 	let availableModels = $state(fallbackModels);
@@ -123,7 +133,6 @@ Respond ONLY with valid JSON.`);
 	// Auto-save wizard data when values change
 	async function saveWizardData() {
 		if (!projectId) return;
-		// Serialize data to ensure it's clonable for IndexedDB
 		const dataToSave = JSON.parse(JSON.stringify({
 			sampleText,
 			result: analysisResult,
@@ -196,6 +205,7 @@ Respond ONLY with valid JSON.`);
 		}
 
 		analyzing = false;
+		await saveWizardData();
 	}
 
 	function toggleTone(tone) {
@@ -206,9 +216,11 @@ Respond ONLY with valid JSON.`);
 		}
 	}
 
-	async function saveAndContinue() {
+	async function handleNext() {
 		// For AI mode, check if we have valid result
 		if (activeTab === 'ai' && (!analysisResult || analysisResult.error)) return;
+		
+		saving = true;
 		
 		// Build clean serializable object from editable fields
 		const rulesToSave = {
@@ -226,288 +238,254 @@ Respond ONLY with valid JSON.`);
 		
 		await currentProjectStore.saveRules(rulesToSave);
 		await projectsService.updateSetupStep(parseInt(projectId), 'analyze');
+		
+		saving = false;
 		goto(`/projects/${projectId}/compare`);
+	}
+
+	function handleBack() {
+		goto('/');
 	}
 
 	// Check if manual form is valid (at least one tone selected)
 	const isManualFormValid = $derived(editableTone.length > 0);
-
-	// Wizard navigation
-	const wizardSteps = $derived([
-		{ id: 'analyze', label: 'تحلیل سبک', url: `/projects/${projectId}/analyze`, active: true },
-		{ id: 'compare', label: 'مقایسه مدل‌ها', url: `/projects/${projectId}/compare`, active: false },
-		{ id: 'workspace', label: 'فضای کار', url: `/projects/${projectId}`, active: false }
-	]);
-	const currentStepIndex = 0;
-
-	async function goBack() {
-		await saveWizardData();
-		goto('/');
-	}
+	const canProceed = $derived(activeTab === 'ai' ? (analysisResult && !analysisResult.error) : isManualFormValid);
 </script>
 
-<div class="container mx-auto py-8 px-4 max-w-4xl">
-	<div class="mb-8">
-		<h1 class="text-3xl font-bold">تنظیم سبک ترجمه</h1>
-		<p class="text-muted-foreground mt-1">
-			سبک و قوانین ترجمه را تنظیم کنید - با تحلیل AI یا به صورت دستی
-		</p>
-	</div>
+<WizardShell
+	{steps}
+	{currentStepIndex}
+	projectTitle={project?.title}
+	operationType="translation"
+	{saving}
+	{canProceed}
+	finishLabel="ادامه"
+	nextLabel="ادامه به مقایسه"
+	onBack={handleBack}
+	onNext={handleNext}
+>
+	<div class="space-y-6" dir="rtl">
+		<Tabs.Root value={activeTab} onValueChange={(v) => activeTab = v} class="mb-6">
+			<Tabs.List class="grid w-full grid-cols-2">
+				<Tabs.Trigger value="ai">🤖 تحلیل با AI</Tabs.Trigger>
+				<Tabs.Trigger value="manual">✏️ تنظیم دستی</Tabs.Trigger>
+			</Tabs.List>
 
-	<Tabs.Root value={activeTab} onValueChange={(v) => activeTab = v} class="mb-6">
-		<Tabs.List class="grid w-full grid-cols-2">
-			<Tabs.Trigger value="ai">🤖 تحلیل با AI</Tabs.Trigger>
-			<Tabs.Trigger value="manual">✏️ تنظیم دستی</Tabs.Trigger>
-		</Tabs.List>
-
-		<Tabs.Content value="ai" class="mt-4">
-			<Card>
-				<CardHeader>
-					<CardTitle>متن نمونه</CardTitle>
-					<CardDescription>
-						یک پاراگراف یا بخش نمونه از متنی که می‌خواهید ترجمه کنید وارد کنید تا AI سبک را تحلیل کند
-					</CardDescription>
-				</CardHeader>
-				<CardContent class="space-y-4">
-					<Textarea 
-						bind:value={sampleText}
-						rows={8}
-						placeholder="متن نمونه را اینجا وارد کنید..."
-						dir="auto"
-					/>
-
-					<div class="flex flex-wrap gap-4">
-						<label class="flex items-center gap-2">
-							<Checkbox bind:checked={analyzeOptions.tone} />
-							<span class="text-sm">لحن</span>
-						</label>
-						<label class="flex items-center gap-2">
-							<Checkbox bind:checked={analyzeOptions.vocabulary} />
-							<span class="text-sm">سطح واژگان</span>
-						</label>
-						<label class="flex items-center gap-2">
-							<Checkbox bind:checked={analyzeOptions.structure} />
-							<span class="text-sm">ساختار جمله</span>
-						</label>
-						<label class="flex items-center gap-2">
-							<Checkbox bind:checked={analyzeOptions.style} />
-							<span class="text-sm">سبک ترجمه</span>
-						</label>
-					</div>
-
-					<!-- Model Selection -->
-					<div class="space-y-2">
-						<Label>
-							مدل تحلیل
-							{#if loadingModels}
-								<span class="text-xs text-muted-foreground mr-2">در حال دریافت لیست مدل‌ها...</span>
-							{/if}
-						</Label>
-						<Input
-							bind:value={analyzeModelSearchQuery}
-							placeholder="جستجوی مدل..."
-							dir="auto"
-							class="mb-1"
-						/>
-						<Select.Root type="single" value={analyzeModel} onValueChange={(v) => analyzeModel = v}>
-							<Select.Trigger class="w-full max-w-md">
-								{analyzeModelName}
-							</Select.Trigger>
-							<Select.Content class="max-h-[300px] overflow-y-auto">
-								{#each filteredAnalyzeModels as model}
-									<Select.Item value={model.id} label={model.name}>{model.name}</Select.Item>
-								{/each}
-								{#if filteredAnalyzeModels.length === 0 && analyzeModelSearchQuery.trim()}
-									<div class="p-2 text-sm text-muted-foreground text-center">مدلی پیدا نشد</div>
-								{/if}
-							</Select.Content>
-						</Select.Root>
-					</div>
-
-					<div class="flex items-center gap-3">
-						<Button onclick={analyzeStyle} disabled={analyzing || !sampleText.trim()}>
-							{analyzing ? 'در حال تحلیل...' : 'شروع تحلیل'}
-						</Button>
-						<Button variant="outline" onclick={() => showAnalyzePrompt = !showAnalyzePrompt}>
-							{showAnalyzePrompt ? 'بستن پرامپت' : 'مشاهده / ویرایش پرامپت'}
-						</Button>
-					</div>
-
-					{#if showAnalyzePrompt}
-						<div class="p-4 rounded-lg border bg-muted/30 space-y-2">
-							<Label class="mb-1 block text-sm font-medium">پرامپت تحلیل (قابل ویرایش)</Label>
-							<Textarea
-								bind:value={analyzePrompt}
-								rows={10}
-								class="font-mono text-sm"
-								dir="ltr"
-							/>
-							<p class="text-xs text-muted-foreground">
-								متغیر {'{sampleText}'} با متن نمونه جایگزین می‌شود.
-							</p>
-						</div>
-					{/if}
-
-					{#if analyzeStatus !== 'idle'}
-						<div class="flex items-center gap-2 text-sm p-3 rounded-lg border {analyzeStatus === 'loading' ? 'bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800' : analyzeStatus === 'success' ? 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800' : 'bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800'}">
-							{#if analyzeStatus === 'loading'}
-								<span class="animate-spin">⏳</span>
-								<span>در حال ارسال به {analyzeModelName}...</span>
-							{:else if analyzeStatus === 'success'}
-								<span>✅</span>
-								<span class="text-green-700 dark:text-green-300">تحلیل با موفقیت انجام شد ({analyzeModelName})</span>
-							{:else if analyzeStatus === 'error'}
-								<span>❌</span>
-								<span class="text-red-700 dark:text-red-300">خطا: {analyzeError}</span>
-							{/if}
-						</div>
-					{/if}
-				</CardContent>
-			</Card>
-
-			{#if analysisResult}
-				<Card class="mt-4">
+			<Tabs.Content value="ai" class="mt-4">
+				<Card>
 					<CardHeader>
-						<CardTitle>نتیجه تحلیل</CardTitle>
-						<CardDescription>می‌توانید مقادیر را ویرایش کنید</CardDescription>
+						<CardTitle>متن نمونه</CardTitle>
+						<CardDescription>
+							یک پاراگراف یا بخش نمونه از متنی که می‌خواهید ترجمه کنید وارد کنید تا AI سبک را تحلیل کند
+						</CardDescription>
 					</CardHeader>
-					<CardContent>
-						{#if analysisResult.error}
-							<p class="text-red-600">{analysisResult.error}</p>
-							{#if analysisResult.raw}
-								<pre class="mt-2 p-4 bg-muted rounded text-sm overflow-auto">{analysisResult.raw}</pre>
-							{/if}
-						{:else}
-							{@render styleFields()}
+					<CardContent class="space-y-4">
+						<Textarea 
+							bind:value={sampleText}
+							rows={8}
+							placeholder="متن نمونه را اینجا وارد کنید..."
+							dir="auto"
+						/>
+
+						<div class="flex flex-wrap gap-4">
+							<label class="flex items-center gap-2">
+								<Checkbox bind:checked={analyzeOptions.tone} />
+								<span class="text-sm">لحن</span>
+							</label>
+							<label class="flex items-center gap-2">
+								<Checkbox bind:checked={analyzeOptions.vocabulary} />
+								<span class="text-sm">سطح واژگان</span>
+							</label>
+							<label class="flex items-center gap-2">
+								<Checkbox bind:checked={analyzeOptions.structure} />
+								<span class="text-sm">ساختار جمله</span>
+							</label>
+							<label class="flex items-center gap-2">
+								<Checkbox bind:checked={analyzeOptions.style} />
+								<span class="text-sm">سبک ترجمه</span>
+							</label>
+						</div>
+
+						<!-- Model Selection - Combobox Pattern -->
+						<div class="space-y-2">
+							<Label>
+								مدل تحلیل
+								{#if loadingModels}
+									<span class="text-xs text-muted-foreground mr-2">در حال دریافت لیست مدل‌ها...</span>
+								{/if}
+							</Label>
+							<Select.Root type="single" value={analyzeModel} onValueChange={(v) => analyzeModel = v}>
+								<Select.Trigger class="w-full max-w-md">
+									{analyzeModelName}
+								</Select.Trigger>
+								<Select.Content class="max-h-[300px] overflow-y-auto">
+									<!-- Search input inside dropdown (combobox pattern) -->
+									<div class="p-2 border-b sticky top-0 bg-background z-10">
+										<Input
+											bind:value={analyzeModelSearchQuery}
+											placeholder="جستجوی مدل..."
+											dir="auto"
+											class="h-8 text-sm"
+										/>
+									</div>
+									{#each filteredAnalyzeModels as model}
+										<Select.Item value={model.id} label={model.name}>{model.name}</Select.Item>
+									{/each}
+									{#if filteredAnalyzeModels.length === 0 && analyzeModelSearchQuery.trim()}
+										<div class="p-2 text-sm text-muted-foreground text-center">مدلی پیدا نشد</div>
+									{/if}
+								</Select.Content>
+							</Select.Root>
+						</div>
+
+						<div class="flex items-center gap-3">
+							<Button onclick={analyzeStyle} disabled={analyzing || !sampleText.trim()}>
+								{analyzing ? 'در حال تحلیل...' : 'شروع تحلیل'}
+							</Button>
+							<Button variant="outline" onclick={() => showAnalyzePrompt = !showAnalyzePrompt}>
+								{showAnalyzePrompt ? 'بستن پرامپت' : 'مشاهده / ویرایش پرامپت'}
+							</Button>
+						</div>
+
+						{#if showAnalyzePrompt}
+							<div class="p-4 rounded-lg border bg-muted/30 space-y-2">
+								<Label class="mb-1 block text-sm font-medium">پرامپت تحلیل (قابل ویرایش)</Label>
+								<Textarea
+									bind:value={analyzePrompt}
+									rows={10}
+									class="font-mono text-sm"
+									dir="ltr"
+								/>
+								<p class="text-xs text-muted-foreground">
+									متغیر {'{sampleText}'} با متن نمونه جایگزین می‌شود.
+								</p>
+							</div>
+						{/if}
+
+						{#if analyzeStatus !== 'idle'}
+							<div class="flex items-center gap-2 text-sm p-3 rounded-lg border {analyzeStatus === 'loading' ? 'bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800' : analyzeStatus === 'success' ? 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800' : 'bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800'}">
+								{#if analyzeStatus === 'loading'}
+									<span class="animate-spin">⏳</span>
+									<span>در حال ارسال به {analyzeModelName}...</span>
+								{:else if analyzeStatus === 'success'}
+									<span>✅</span>
+									<span class="text-green-700 dark:text-green-300">تحلیل با موفقیت انجام شد ({analyzeModelName})</span>
+								{:else if analyzeStatus === 'error'}
+									<span>❌</span>
+									<span class="text-red-700 dark:text-red-300">خطا: {analyzeError}</span>
+								{/if}
+							</div>
 						{/if}
 					</CardContent>
 				</Card>
-			{/if}
-		</Tabs.Content>
 
-		<Tabs.Content value="manual" class="mt-4">
-			<Card>
-				<CardHeader>
-					<CardTitle>تنظیمات دستی</CardTitle>
-					<CardDescription>سبک و قوانین ترجمه را خودتان مشخص کنید</CardDescription>
-				</CardHeader>
-				<CardContent>
-					{@render styleFields()}
-				</CardContent>
-			</Card>
-		</Tabs.Content>
-	</Tabs.Root>
+				{#if analysisResult}
+					<Card class="mt-4">
+						<CardHeader>
+							<CardTitle>نتیجه تحلیل</CardTitle>
+							<CardDescription>می‌توانید مقادیر را ویرایش کنید</CardDescription>
+						</CardHeader>
+						<CardContent>
+							{#if analysisResult.error}
+								<p class="text-red-600">{analysisResult.error}</p>
+								{#if analysisResult.raw}
+									<pre class="mt-2 p-4 bg-muted rounded text-sm overflow-auto">{analysisResult.raw}</pre>
+								{/if}
+							{:else}
+								{@render styleFields()}
+							{/if}
+						</CardContent>
+					</Card>
+				{/if}
+			</Tabs.Content>
 
-	{#snippet styleFields()}
-		<div class="space-y-6">
-			<!-- لحن -->
-			<div>
-				<Label class="mb-2 block">لحن (می‌توانید چند مورد انتخاب کنید)</Label>
-				<div class="flex flex-wrap gap-2">
-					{#each toneOptions as option}
-						<button
-							type="button"
-							class="px-3 py-1.5 rounded-full text-sm border transition-colors {editableTone.includes(option.value) ? 'bg-primary text-primary-foreground border-primary' : 'bg-muted hover:bg-muted/80 border-transparent'}"
-							onclick={() => toggleTone(option.value)}
-						>
-							{option.label}
-						</button>
+			<Tabs.Content value="manual" class="mt-4">
+				<Card>
+					<CardHeader>
+						<CardTitle>تنظیمات دستی</CardTitle>
+						<CardDescription>سبک و قوانین ترجمه را خودتان مشخص کنید</CardDescription>
+					</CardHeader>
+					<CardContent>
+						{@render styleFields()}
+					</CardContent>
+				</Card>
+			</Tabs.Content>
+		</Tabs.Root>
+	</div>
+</WizardShell>
+
+{#snippet styleFields()}
+	<div class="space-y-6">
+		<!-- لحن -->
+		<div>
+			<Label class="mb-2 block">لحن (می‌توانید چند مورد انتخاب کنید)</Label>
+			<div class="flex flex-wrap gap-2">
+				{#each toneOptions as option}
+					<button
+						type="button"
+						class="px-3 py-1.5 rounded-full text-sm border transition-colors {editableTone.includes(option.value) ? 'bg-primary text-primary-foreground border-primary' : 'bg-muted hover:bg-muted/80 border-transparent'}"
+						onclick={() => toggleTone(option.value)}
+					>
+						{option.label}
+					</button>
+				{/each}
+			</div>
+		</div>
+
+		<!-- سطح واژگان -->
+		<div>
+			<Label class="mb-2 block">سطح واژگان</Label>
+			<Select.Root type="single" bind:value={editableVocabulary}>
+				<Select.Trigger class="w-full max-w-xs">
+					{vocabularyLabel}
+				</Select.Trigger>
+				<Select.Content>
+					{#each vocabularyOptions as option}
+						<Select.Item value={option.value} label={option.label}>{option.label}</Select.Item>
 					{/each}
-				</div>
-			</div>
-
-			<!-- سطح واژگان -->
-			<div>
-				<Label class="mb-2 block">سطح واژگان</Label>
-				<Select.Root type="single" bind:value={editableVocabulary}>
-					<Select.Trigger class="w-full max-w-xs">
-						{vocabularyLabel}
-					</Select.Trigger>
-					<Select.Content>
-						{#each vocabularyOptions as option}
-							<Select.Item value={option.value} label={option.label}>{option.label}</Select.Item>
-						{/each}
-					</Select.Content>
-				</Select.Root>
-			</div>
-
-			<!-- ساختار جمله -->
-			<div>
-				<Label class="mb-2 block">ساختار جمله</Label>
-				<Select.Root type="single" bind:value={editableStructure}>
-					<Select.Trigger class="w-full max-w-xs">
-						{structureLabel}
-					</Select.Trigger>
-					<Select.Content>
-						{#each structureOptions as option}
-							<Select.Item value={option.value} label={option.label}>{option.label}</Select.Item>
-						{/each}
-					</Select.Content>
-				</Select.Root>
-			</div>
-
-			<!-- نوع ترجمه -->
-			<div>
-				<Label class="mb-2 block">نوع ترجمه</Label>
-				<Select.Root type="single" bind:value={editableTranslationType}>
-					<Select.Trigger class="w-full max-w-xs">
-						{translationTypeLabel}
-					</Select.Trigger>
-					<Select.Content>
-						{#each translationTypeOptions as option}
-							<Select.Item value={option.value} label={option.label}>{option.label}</Select.Item>
-						{/each}
-					</Select.Content>
-				</Select.Root>
-			</div>
-
-			<!-- قوانین سفارشی -->
-			<div>
-				<Label class="mb-2 block">قوانین سفارشی (هر خط یک قانون)</Label>
-				<Textarea 
-					bind:value={editableCustomRules}
-					rows={4}
-					placeholder="قوانین خاص ترجمه را اینجا بنویسید..."
-					dir="auto"
-				/>
-			</div>
+				</Select.Content>
+			</Select.Root>
 		</div>
-	{/snippet}
 
-	<!-- Wizard Progress -->
-	<div class="mb-6 flex items-center justify-center gap-2">
-		{#each wizardSteps as step, i}
-			<div class="flex items-center">
-				<a 
-					href={step.url}
-					class="flex items-center gap-2 px-3 py-2 rounded-lg transition-colors {step.active ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80 text-muted-foreground'}"
-				>
-					<span class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold {step.active ? 'bg-primary-foreground text-primary' : 'bg-background'}">{i + 1}</span>
-					<span class="text-sm">{step.label}</span>
-				</a>
-				{#if i < wizardSteps.length - 1}
-					<span class="mx-2 text-muted-foreground">→</span>
-				{/if}
-			</div>
-		{/each}
-	</div>
+		<!-- ساختار جمله -->
+		<div>
+			<Label class="mb-2 block">ساختار جمله</Label>
+			<Select.Root type="single" bind:value={editableStructure}>
+				<Select.Trigger class="w-full max-w-xs">
+					{structureLabel}
+				</Select.Trigger>
+				<Select.Content>
+					{#each structureOptions as option}
+						<Select.Item value={option.value} label={option.label}>{option.label}</Select.Item>
+					{/each}
+				</Select.Content>
+			</Select.Root>
+		</div>
 
-	<div class="flex justify-between">
-		<Button variant="outline" onclick={goBack}>
-			← بازگشت به لیست
-		</Button>
-		<div class="flex gap-2">
-			{#if activeTab === 'ai'}
-				{#if analysisResult && !analysisResult.error}
-					<Button onclick={saveAndContinue}>
-						ذخیره و ادامه به مقایسه مدل‌ها →
-					</Button>
-				{/if}
-			{:else}
-				<Button onclick={saveAndContinue} disabled={!isManualFormValid}>
-					ذخیره و ادامه به مقایسه مدل‌ها →
-				</Button>
-			{/if}
+		<!-- نوع ترجمه -->
+		<div>
+			<Label class="mb-2 block">نوع ترجمه</Label>
+			<Select.Root type="single" bind:value={editableTranslationType}>
+				<Select.Trigger class="w-full max-w-xs">
+					{translationTypeLabel}
+				</Select.Trigger>
+				<Select.Content>
+					{#each translationTypeOptions as option}
+						<Select.Item value={option.value} label={option.label}>{option.label}</Select.Item>
+					{/each}
+				</Select.Content>
+			</Select.Root>
+		</div>
+
+		<!-- قوانین سفارشی -->
+		<div>
+			<Label class="mb-2 block">قوانین سفارشی (هر خط یک قانون)</Label>
+			<Textarea 
+				bind:value={editableCustomRules}
+				rows={4}
+				placeholder="قوانین خاص ترجمه را اینجا بنویسید..."
+				dir="auto"
+			/>
 		</div>
 	</div>
-</div>
+{/snippet}

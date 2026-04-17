@@ -60,8 +60,8 @@
 	</Card>
 
 	<div class="mt-6 flex gap-2">
-		<Button variant="outline" href="/projects/{projectId}/compare">
-			بازگشت به مقایسه
+		<Button variant="outline" href="/projects/{projectId}/judge">
+			بازگشت به داوری
 		</Button>
 		<Button onclick={saveAndContinue} disabled={saving || !selectedModel}>
 			{saving ? 'در حال ذخیره...' : 'ذخیره و رفتن به Workspace'}
