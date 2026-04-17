@@ -254,58 +254,143 @@
     return { contentChanged, outputChanged, hasChanges: contentChanged || outputChanged };
   }
 
+  // --- Semantic diff with change classification (space/halfspace/punct/word) ---
+  const ZWNJ = '\u200c';
+
   /**
-   * Word-level diff between two strings using LCS.
-   * @param {string} oldText
-   * @param {string} newText
-   * @returns {{type:'equal'|'insert'|'delete', text:string}[]}
+   * Classify a change by its linguistic nature.
+   * @param {string|null} removed
+   * @param {string|null} added
+   * @returns {'space'|'halfspace'|'punct'|'word'}
    */
-  function wordDiff(oldText, newText) {
-    const tokenize = (/** @type {string} */ s) => (s || '').split(/(\s+)/).filter(t => t.length > 0);
-    const a = tokenize(oldText || '');
-    const b = tokenize(newText || '');
-    const n = a.length, m = b.length;
-    /** @type {number[][]} */
-    const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-    for (let i = n - 1; i >= 0; i--) {
-      for (let j = m - 1; j >= 0; j--) {
-        dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-      }
-    }
-    /** @type {{type:'equal'|'insert'|'delete', text:string}[]} */
-    const out = [];
-    let i = 0, j = 0;
-    while (i < n && j < m) {
-      if (a[i] === b[j]) { out.push({ type: 'equal', text: a[i] }); i++; j++; }
-      else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ type: 'delete', text: a[i] }); i++; }
-      else { out.push({ type: 'insert', text: b[j] }); j++; }
-    }
-    while (i < n) { out.push({ type: 'delete', text: a[i++] }); }
-    while (j < m) { out.push({ type: 'insert', text: b[j++] }); }
-    /** @type {{type:'equal'|'insert'|'delete', text:string}[]} */
-    const merged = [];
-    for (const seg of out) {
-      const last = merged[merged.length - 1];
-      if (last && last.type === seg.type) last.text += seg.text;
-      else merged.push({ ...seg });
-    }
-    return merged;
+  function classifyChange(removed, added) {
+    const val = (removed || '') + (added || '');
+    if (/^\s+$/.test(removed || '') && /^\s+$/.test(added || '')) return 'space';
+    if ((removed || '').includes(ZWNJ) || (added || '').includes(ZWNJ)) return 'halfspace';
+    if (/^\s+$/.test(val)) return 'space';
+    if (/^[\u0021-\u002F\u003A-\u0040\u005B-\u0060\u007B-\u007E\u060C\u061B\u061F\u0640،؟!؛«»]+$/.test(val)) return 'punct';
+    return 'word';
+  }
+
+  /** Tokenise preserving whitespace + ZWNJ as their own tokens. */
+  function tokenise(/** @type {string} */ text) {
+    return (text || '').split(/([\s\u200c]+)/).filter(t => t.length > 0);
   }
 
   /**
-   * Split a word-level diff into the source-side view and the output-side view.
-   * - srcSide: equal + delete segments → shown in source column (deleted parts = red)
-   * - outSide: equal + insert segments → shown in output column (inserted parts = green)
-   * This way, both columns show their OWN version with just the changed parts highlighted,
-   * not a mixed red/green view.
-   * @param {string} source
-   * @param {string} output
+   * LCS-based token diff.
+   * @param {string[]} a @param {string[]} b
+   * @returns {{ type: 'equal'|'remove'|'add', value: string }[]}
    */
-  function splitDiff(source, output) {
-    const diff = wordDiff(source, output);
-    const srcSide = diff.filter(s => s.type !== 'insert');
-    const outSide = diff.filter(s => s.type !== 'delete');
-    return { srcSide, outSide };
+  function lcsDiff(a, b) {
+    const m = a.length, n = b.length;
+    const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = m - 1; i >= 0; i--)
+      for (let j = n - 1; j >= 0; j--)
+        dp[i][j] = a[i] === b[j] ? 1 + dp[i + 1][j + 1] : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    /** @type {{ type: 'equal'|'remove'|'add', value: string }[]} */
+    const out = [];
+    let i = 0, j = 0;
+    while (i < m || j < n) {
+      if (i < m && j < n && a[i] === b[j]) { out.push({ type: 'equal', value: a[i] }); i++; j++; }
+      else if (j < n && (i >= m || dp[i][j + 1] >= dp[i + 1][j])) { out.push({ type: 'add', value: b[j] }); j++; }
+      else { out.push({ type: 'remove', value: a[i] }); i++; }
+    }
+    return out;
+  }
+
+  /**
+   * Enriched diff: each non-equal segment gets a pairId and a kind.
+   * Pair-ids let us revert a specific change (remove+add pair) by clicking.
+   * @typedef {{ type:'equal'|'remove'|'add', value:string, kind: 'space'|'halfspace'|'punct'|'word'|null, pairId: number }} EnrichedToken
+   * @param {string} source @param {string} output
+   * @returns {EnrichedToken[]}
+   */
+  function buildRichDiff(source, output) {
+    const diff = lcsDiff(tokenise(source), tokenise(output));
+    /** @type {EnrichedToken[]} */
+    const result = [];
+    let nextId = 0;
+    for (let i = 0; i < diff.length; i++) {
+      const cur = diff[i];
+      if (cur.type === 'equal') { result.push({ ...cur, kind: null, pairId: -1 }); continue; }
+      if (cur.type === 'remove') {
+        const next = diff[i + 1];
+        if (next && next.type === 'add') {
+          const kind = classifyChange(cur.value, next.value);
+          const id = nextId++;
+          result.push({ ...cur, kind, pairId: id });
+          result.push({ ...next, kind, pairId: id });
+          i++;
+        } else {
+          result.push({ ...cur, kind: classifyChange(cur.value, null), pairId: nextId++ });
+        }
+      } else { // add
+        result.push({ ...cur, kind: classifyChange(null, cur.value), pairId: nextId++ });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * CSS classes for a changed token by side + kind.
+   * @param {'remove'|'add'} type
+   * @param {'space'|'halfspace'|'punct'|'word'|null} kind
+   */
+  function markClass(type, kind) {
+    const base = 'cursor-pointer rounded px-0.5 transition-all hover:ring-2 hover:ring-offset-1 hover:ring-offset-background';
+    if (type === 'remove') {
+      if (kind === 'space')     return `${base} bg-orange-100 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300 line-through hover:ring-orange-400`;
+      if (kind === 'halfspace') return `${base} bg-purple-100 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300 line-through hover:ring-purple-400`;
+      if (kind === 'punct')     return `${base} bg-yellow-100 dark:bg-yellow-950/50 text-yellow-700 dark:text-yellow-300 line-through hover:ring-yellow-400`;
+      return                           `${base} bg-red-100 dark:bg-red-950/50 text-red-700 dark:text-red-300 line-through opacity-80 hover:ring-red-400`;
+    } else {
+      if (kind === 'space')     return `${base} bg-orange-100 dark:bg-orange-950/50 text-orange-800 dark:text-orange-200 outline outline-1 outline-orange-300 hover:ring-orange-400`;
+      if (kind === 'halfspace') return `${base} bg-purple-100 dark:bg-purple-950/50 text-purple-800 dark:text-purple-200 outline outline-1 outline-purple-300 hover:ring-purple-400`;
+      if (kind === 'punct')     return `${base} bg-yellow-100 dark:bg-yellow-950/50 text-yellow-800 dark:text-yellow-200 hover:ring-yellow-400`;
+      return                           `${base} bg-green-100 dark:bg-green-950/50 text-green-800 dark:text-green-200 hover:ring-green-400`;
+    }
+  }
+
+  /** Label for change kind (shown in revert popover). */
+  function kindLabel(/** @type {'space'|'halfspace'|'punct'|'word'|null} */ kind) {
+    if (kind === 'space') return 'فاصله';
+    if (kind === 'halfspace') return 'نیم‌فاصله';
+    if (kind === 'punct') return 'علامت نگارشی';
+    if (kind === 'word') return 'کلمه/املا';
+    return 'تغییر';
+  }
+
+  // --- Revert popover state ---
+  /** @type {{ blockId: string, pairId: number, x: number, y: number, kind: 'space'|'halfspace'|'punct'|'word'|null } | null} */
+  let revertPopover = $state(null);
+
+  /** @param {string} blockId @param {number} pairId */
+  async function revertChange(blockId, pairId) {
+    const block = blocks.find(b => b.id === blockId);
+    if (!block || !block.outputText) return;
+    const currentOutput = blockOutputText(block);
+    const rich = buildRichDiff(block.content, currentOutput);
+    // Rebuild the output, but for the target pairId replace the add value with the remove value.
+    // For equals: keep. For adds with matching pairId: skip. For removes with matching pairId: emit. Others: emit only adds (the current output side).
+    let reverted = '';
+    for (const t of rich) {
+      if (t.type === 'equal') reverted += t.value;
+      else if (t.pairId === pairId) {
+        // revert: restore source version
+        if (t.type === 'remove') reverted += t.value;
+        // skip the 'add'
+      } else {
+        // other pairs: keep current output side (adds), ignore removes
+        if (t.type === 'add') reverted += t.value;
+      }
+    }
+    blocks = blocks.map(b => b.id === blockId
+      ? { ...b, status: 'edited', editedText: reverted }
+      : b
+    );
+    revertPopover = null;
+    await saveBlocks();
   }
 
   async function saveBlocks() {
@@ -667,6 +752,16 @@
               {showDiff ? 'diff روشن' : 'diff خاموش'}
             </button>
 
+            {#if showDiff}
+              <!-- Color legend -->
+              <div class="hidden md:flex items-center gap-2 h-7 px-2 rounded border border-input bg-background/50 text-[10px]" title="راهنمای رنگ تغییرات">
+                <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded bg-orange-200 dark:bg-orange-900 border border-orange-400"></span>فاصله</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded bg-purple-200 dark:bg-purple-900 border border-purple-400"></span>نیم‌فاصله</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded bg-yellow-200 dark:bg-yellow-900 border border-yellow-400"></span>نگارشی</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded bg-green-200 dark:bg-green-900 border border-green-400"></span>کلمه/املا</span>
+              </div>
+            {/if}
+
             <button onclick={openPromptEditor}
               class="inline-flex items-center gap-1 h-7 px-2.5 rounded text-xs border border-input bg-background text-muted-foreground hover:bg-muted transition-colors">
               <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
@@ -708,12 +803,12 @@
               </div>
               <div bind:this={sourceScrollEl} onscroll={onSourceScroll} class="flex-1 overflow-y-auto p-3">
                 {#if showDiff}
-                  <!-- Diff mode: read-only source view showing where the AI changed things.
-                       Words marked red were modified/removed by the AI editor. -->
+                  <!-- Diff mode: read-only source view with clickable colored marks.
+                       Click a mark to open the revert popover. -->
                   <div class="space-y-1">
                     {#each blocks as block (block.id)}
                       {@const output = blockOutputText(block)}
-                      {@const srcSide = output ? splitDiff(block.content, output).srcSide : null}
+                      {@const rich = output ? buildRichDiff(block.content, output) : null}
                       <!-- svelte-ignore a11y_no_static_element_interactions -->
                       <div
                         class="rounded-lg px-2 py-1.5 transition-colors {hoveredBlockId === block.id ? 'bg-muted/40 ring-1 ring-primary/15' : ''} {block.outOfSync ? 'ring-1 ring-amber-300 dark:ring-amber-700' : ''}"
@@ -726,16 +821,22 @@
                             متن اصلی پس از ویرایش تغییر کرده — خارج از سینک
                           </div>
                         {/if}
-                        {#if srcSide}
+                        {#if rich}
                           <p class="text-sm leading-relaxed whitespace-pre-wrap" dir="auto">
-                            {#each srcSide as seg}
-                              {#if seg.type === 'equal'}<span>{seg.text}</span>
-                              {:else}<span class="bg-red-100 dark:bg-red-950/50 text-red-700 dark:text-red-400 rounded px-0.5" title="در متن ویرایش‌شده تغییر/اصلاح شده">{seg.text}</span>
+                            {#each rich.filter(t => t.type !== 'add') as seg, si (si)}
+                              {#if seg.type === 'equal'}<span>{seg.value}</span>
+                              {:else}
+                                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                                <span
+                                  class={markClass('remove', seg.kind)}
+                                  title="{kindLabel(seg.kind)} — کلیک برای بازگشت"
+                                  onclick={(e) => { e.stopPropagation(); revertPopover = { blockId: block.id, pairId: seg.pairId, x: e.clientX, y: e.clientY, kind: seg.kind }; }}
+                                >{seg.value}</span>
                               {/if}
                             {/each}
                           </p>
                         {:else}
-                          <!-- No output yet: plain source -->
                           <p class="text-sm leading-relaxed whitespace-pre-wrap" dir="auto">{block.content}</p>
                         {/if}
                       </div>
@@ -876,13 +977,19 @@
                             blocks = [...blocks];
                           }}>
                           {#if showDiff}
-                            <!-- Output-side diff: show edited text with inserted/changed parts highlighted in green.
-                                 Words marked green are what the AI added/changed compared to the source. -->
-                            {@const outSide = splitDiff(block.content, blockOutputText(block)).outSide}
+                            <!-- Output-side rich diff with semantic colors + click-to-revert -->
+                            {@const rich = buildRichDiff(block.content, blockOutputText(block))}
                             <p class="text-sm leading-relaxed whitespace-pre-wrap" dir="auto">
-                              {#each outSide as seg}
-                                {#if seg.type === 'equal'}<span>{seg.text}</span>
-                                {:else}<span class="bg-green-100 dark:bg-green-950/50 text-green-800 dark:text-green-300 rounded px-0.5" title="اصلاح/اضافه‌شده توسط ویراستار">{seg.text}</span>
+                              {#each rich.filter(t => t.type !== 'remove') as seg, si (si)}
+                                {#if seg.type === 'equal'}<span>{seg.value}</span>
+                                {:else}
+                                  <!-- svelte-ignore a11y_click_events_have_key_events -->
+                                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                                  <span
+                                    class={markClass('add', seg.kind)}
+                                    title="{kindLabel(seg.kind)} — کلیک برای بازگشت"
+                                    onclick={(e) => { e.stopPropagation(); revertPopover = { blockId: block.id, pairId: seg.pairId, x: e.clientX, y: e.clientY, kind: seg.kind }; }}
+                                  >{seg.value}</span>
                                 {/if}
                               {/each}
                             </p>
@@ -1049,6 +1156,33 @@
           class="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-40 transition-colors">ایجاد</button>
       </div>
     </div>
+  </div>
+{/if}
+
+<!-- Revert change popover -->
+{#if revertPopover}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 z-40" onclick={() => revertPopover = null}></div>
+  <div
+    class="fixed z-50 rounded-lg border bg-popover shadow-xl p-2 flex flex-col gap-1 min-w-[12rem]"
+    style="top: {revertPopover.y + 8}px; left: {Math.max(8, revertPopover.x - 100)}px;"
+    dir="rtl"
+  >
+    <div class="text-[11px] text-muted-foreground px-1 pb-1 border-b">
+      نوع تغییر: <span class="font-medium text-foreground">{kindLabel(revertPopover.kind)}</span>
+    </div>
+    <button
+      onclick={() => revertPopover && revertChange(revertPopover.blockId, revertPopover.pairId)}
+      class="w-full text-right text-xs px-2 py-1.5 rounded hover:bg-muted transition-colors flex items-center gap-2">
+      <svg class="w-3.5 h-3.5 text-amber-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 4v5h5"/></svg>
+      بازگشت به نسخه اصلی
+    </button>
+    <button
+      onclick={() => revertPopover = null}
+      class="w-full text-right text-xs px-2 py-1.5 rounded hover:bg-muted transition-colors text-muted-foreground">
+      بستن
+    </button>
   </div>
 {/if}
 
