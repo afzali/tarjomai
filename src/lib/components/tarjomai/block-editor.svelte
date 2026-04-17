@@ -183,20 +183,106 @@
    * @param {ClipboardEvent} e
    * @param {number} idx
    */
-  function handlePaste(e, idx) {
+  async function handlePaste(e, idx) {
     e.preventDefault();
-    const text = e.clipboardData?.getData('text/plain') || '';
-    const paragraphs = text.split(/\n+/).map(p => p.trim()).filter(Boolean);
-    if (paragraphs.length <= 1) {
-      document.execCommand('insertText', false, text.replace(/\n/g, ' '));
+    // Get plain text; fall back to HTML→text if only HTML is available
+    let text = e.clipboardData?.getData('text/plain') || '';
+    if (!text) {
+      const html = e.clipboardData?.getData('text/html') || '';
+      if (html) {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = html;
+        text = tmp.innerText || tmp.textContent || '';
+      }
+    }
+    if (!text) return;
+
+    // Normalize line endings and split into paragraphs.
+    // A paragraph break = one or more blank lines OR a single newline that separates distinct lines.
+    // We treat any run of \n (1 or more) as a paragraph separator, since pasting
+    // from a word processor typically gives one \n per paragraph.
+    const normalized = text.replace(/\r\n?/g, '\n').replace(/\u00A0/g, ' ');
+    const paragraphs = normalized.split(/\n+/).map(p => p.trim()).filter(Boolean);
+    if (paragraphs.length === 0) return;
+
+    // Get caret position within the current block
+    const el = blockRefs[blocks[idx]?.id ?? ''];
+    const currentContent = el?.textContent || '';
+    let caretOffset = currentContent.length;
+    if (el) {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
+        const range = sel.getRangeAt(0);
+        const preCaret = range.cloneRange();
+        preCaret.selectNodeContents(el);
+        preCaret.setEnd(range.endContainer, range.endOffset);
+        caretOffset = preCaret.toString().length;
+      }
+    }
+    const beforeCaret = currentContent.slice(0, caretOffset);
+    const afterCaret = currentContent.slice(caretOffset);
+
+    if (paragraphs.length === 1) {
+      // Single paragraph: insert inline at caret, keep existing block
+      const newContent = beforeCaret + paragraphs[0] + afterCaret;
+      blocks[idx] = { ...blocks[idx], content: newContent };
+      blocks = [...blocks];
+      // Force DOM update (this block is focused, so $effect would skip it)
+      if (el) {
+        el.textContent = newContent;
+        // Restore caret to after the inserted text
+        await tick();
+        placeCaretAtOffset(el, beforeCaret.length + paragraphs[0].length);
+      }
+      notify();
       return;
     }
+
+    // Multi-paragraph paste: 
+    // - First paragraph merges into current block (beforeCaret + paragraphs[0])
+    // - Middle paragraphs become standalone blocks
+    // - Last paragraph merges with afterCaret into its own block
     const before = blocks.slice(0, idx);
     const after = blocks.slice(idx + 1);
-    const updated = { ...blocks[idx], content: paragraphs[0] };
-    const newBlocks = paragraphs.slice(1).map(p => (/** @type {Block} */ ({ id: uid(), type: 'paragraph', content: p, status: 'pending' })));
-    blocks = [...before, updated, ...newBlocks, ...after];
+    const firstBlock = { ...blocks[idx], content: beforeCaret + paragraphs[0] };
+    const middleBlocks = paragraphs.slice(1, -1).map(p => (/** @type {Block} */ ({
+      id: uid(), type: 'paragraph', content: p, status: 'pending'
+    })));
+    const lastBlock = /** @type {Block} */ ({
+      id: uid(), type: 'paragraph',
+      content: paragraphs[paragraphs.length - 1] + afterCaret,
+      status: 'pending'
+    });
+
+    blocks = [...before, firstBlock, ...middleBlocks, lastBlock, ...after];
     notify();
+
+    // Force DOM update for the first block (it's focused; $effect will skip it)
+    if (el) el.textContent = firstBlock.content;
+    // Focus the last pasted block and place caret at end of pasted content
+    await tick();
+    const lastEl = blockRefs[lastBlock.id];
+    if (lastEl) {
+      placeCaretAtOffset(lastEl, paragraphs[paragraphs.length - 1].length);
+    }
+  }
+
+  /** @param {HTMLElement} el @param {number} offset */
+  function placeCaretAtOffset(el, offset) {
+    el.focus();
+    const range = document.createRange();
+    const sel = window.getSelection();
+    const textNode = el.firstChild;
+    if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+      const len = (textNode.nodeValue || '').length;
+      range.setStart(textNode, Math.min(offset, len));
+      range.collapse(true);
+    } else {
+      range.selectNodeContents(el);
+      range.collapse(false);
+    }
+    sel?.removeAllRanges();
+    sel?.addRange(range);
   }
 
   /**
