@@ -39,7 +39,7 @@
   // Block-based state — each block is one paragraph
   /**
    * @typedef {{ id: string, source: string, translation: string, status: 'pending'|'translating'|'done'|'error' }} SentenceItem
-   * @typedef {{ id: string, type: string, content: string, sentences?: SentenceItem[], translation?: string, editedTranslation?: string|null, status?: string, outOfSync?: boolean, _editing?: boolean, _editVal?: string, originalContent?: string, originalTranslation?: string }} Block
+   * @typedef {{ id: string, type: string, content: string, sentences?: SentenceItem[], translation?: string, editedTranslation?: string|null, paragraphTranslation?: string|null, status?: string, outOfSync?: boolean, _editing?: boolean, _editVal?: string, originalContent?: string, originalTranslation?: string }} Block
    */
   /** @type {Block[]} */
   let blocks = $state([]);
@@ -94,6 +94,60 @@
 
   // Show/hide diff highlights
   let showDiff = $state(true);
+
+  // Translation mode: 'sentence' (layer 1) or 'paragraph' (layer 2)
+  /** @type {'sentence' | 'paragraph'} */
+  let translationMode = $state('sentence');
+  // Which layer is currently displayed
+  /** @type {1 | 2} */
+  let viewLayer = $state(1);
+
+  // Paragraph translation config
+  let showParagraphSetup = $state(false);
+  const defaultParagraphSystemPrompt = `شما یک ویراستار و مترجم حرفه‌ای هستید.
+
+وظیفه شما:
+- اگر «ترجمه فعلی» ارائه شده: آن را اصل قرار بده و بهبود بده. از صفر ترجمه نکن.
+- اگر ترجمه‌ای نبود: متن اصلی را ترجمه کن.
+
+قوانین مطلق:
+- فقط متن نهایی را خروجی بده. هیچ توضیح، یادداشت، پیشوند یا پسوند اضافه نکن.
+- هیچ معنا یا محتوایی از متن اصلی حذف نشود.`;
+  const defaultParagraphBaseRules = `━━━━━━━━━━━━━━
+قوانین مطلق (تغییرناپذیر)
+━━━━━━━━━━━━━━
+- اگر «ترجمه فعلی» ارائه شده: آن را اصل قرار بده. از صفر ترجمه نکن.
+- اگر ترجمه‌ای نبود: متن اصلی را ترجمه کن.
+- فقط متن نهایی را خروجی بده. هیچ توضیح، یادداشت، پیشوند یا پسوند اضافه نکن.
+- هیچ معنا یا محتوایی از متن اصلی حذف نشود.`;
+  const defaultParagraphUserTemplate = `{{#if translation}}متن اصلی:
+{{original}}
+
+ترجمه فعلی (لایه اول):
+{{translation}}{{else}}متن اصلی:
+{{original}}{{/if}}`;
+  let paragraphSystemPrompt = $state('');
+  let paragraphBaseRules = $state('');
+  let paragraphUserTemplate = $state('');
+  let paragraphModel = $state('');
+  let paragraphModelSearch = $state('');
+  let showParagraphModelDropdown = $state(false);
+  // Persisted paragraph config per project
+  let paragraphConfigSaved = $state(false);
+
+  /** Build the user message from template + block data */
+  function buildParagraphUserMessage(/** @type {string} */ original, /** @type {string} */ translation) {
+    const tmpl = paragraphUserTemplate || defaultParagraphUserTemplate;
+    const hasTranslation = translation.trim().length > 0;
+    // Process {{#if translation}}...{{else}}...{{/if}} conditionals
+    const processed = tmpl.replace(/\{\{#if\s+translation\}\}([\s\S]*?)\{\{else\}\}([\s\S]*?)\{\{\/if\}\}/g,
+      (_, ifBlock, elseBlock) => hasTranslation ? ifBlock : elseBlock
+    );
+    return processed
+      .replace(/\{\{original\}\}/g, original)
+      .replace(/\{\{translation\}\}/g, translation);
+  }
+  let showTranslateMenu = $state(false);
 
   // Stats popup
   let showStats = $state(false);
@@ -154,6 +208,22 @@
     } else if (settings?.defaultModels?.translation) {
       translationModel = settings.defaultModels.translation;
       reviewModel = settings.defaultModels?.review || settings.defaultModels.translation;
+    }
+
+    // Load paragraph translation config
+    if (project.paragraphSystemPrompt) {
+      paragraphSystemPrompt = project.paragraphSystemPrompt;
+      paragraphConfigSaved = true;
+    }
+    if (project.paragraphBaseRules) {
+      paragraphBaseRules = project.paragraphBaseRules;
+    }
+    if (project.paragraphUserTemplate) {
+      paragraphUserTemplate = project.paragraphUserTemplate;
+      paragraphConfigSaved = true;
+    }
+    if (project.paragraphModel) {
+      paragraphModel = project.paragraphModel;
     }
 
     if (chapters.length > 0) selectChapter(chapters[0]);
@@ -485,6 +555,112 @@ Rules:
     };
   }
 
+  /** Get the text to display for a block based on current viewLayer */
+  function blockDisplayText(/** @type {Block} */ b) {
+    if (viewLayer === 2 && b.paragraphTranslation) return b.paragraphTranslation;
+    return blockTranslationText(b);
+  }
+
+  /** Paragraph-mode translation: sends source + layer1 translation to the selected LLM with custom prompt */
+  async function translateAllParagraphs() {
+    if (!selectedChapter || !settings?.openRouterApiKey || !paragraphModel) {
+      showParagraphSetup = true;
+      return;
+    }
+    translating = true;
+    abortController = new AbortController();
+    const signal = abortController.signal;
+
+    const targetBlocks = blocks.filter(b => b.content.trim());
+    totalSentences = targetBlocks.length;
+    doneSentences = 0;
+
+    try {
+      for (const block of targetBlocks) {
+        if (signal.aborted) break;
+        const blockIdx = blocks.findIndex(b => b.id === block.id);
+        if (blockIdx === -1) continue;
+
+        currentSentenceText = block.content.slice(0, 50);
+
+        const layer1 = blockTranslationText(block);
+        const baseRules = paragraphBaseRules || defaultParagraphBaseRules;
+        const mainPrompt = paragraphSystemPrompt || defaultParagraphSystemPrompt;
+        const srcLang = project?.sourceLanguage || 'English';
+        const tgtLang = project?.targetLanguage || 'Persian';
+        const langLine = `زبان مبدأ: ${srcLang} | زبان مقصد (خروجی): ${tgtLang}`;
+        const systemMsg = `${langLine}\n\n${mainPrompt}\n\n${baseRules}`;
+        const userContent = buildParagraphUserMessage(block.content, layer1);
+
+        try {
+          const result = await openrouterService.sendMessage(
+            settings.openRouterApiKey,
+            paragraphModel,
+            [{ role: 'system', content: systemMsg }, { role: 'user', content: userContent }],
+            { signal, projectId, chapterId: selectedChapter?.id }
+          );
+          const translated = (result.content || '').trim();
+          blocks[blockIdx] = { ...blocks[blockIdx], paragraphTranslation: translated };
+          blocks = [...blocks];
+          doneSentences += 1;
+          await saveBlocks();
+        } catch (/** @type {any} */ e) {
+          if (e?.name === 'AbortError') break;
+          // Skip errored blocks, continue
+          doneSentences += 1;
+        }
+      }
+    } finally {
+      translating = false;
+      currentSentenceText = '';
+      abortController = null;
+      viewLayer = 2;
+      await saveBlocks();
+    }
+  }
+
+  /** Save paragraph config to project */
+  async function saveParagraphConfig() {
+    if (!paragraphModel) return;
+    await projectsService.updateProject(projectId, {
+      paragraphSystemPrompt: paragraphSystemPrompt,
+      paragraphBaseRules: paragraphBaseRules,
+      paragraphUserTemplate: paragraphUserTemplate,
+      paragraphModel
+    });
+    paragraphConfigSaved = true;
+    showParagraphSetup = false;
+  }
+
+  // Translation confirmation
+  let showTranslateConfirm = $state(false);
+  let showParagraphConfirm = $state(false);
+
+  /** Start paragraph translation after setup */
+  async function startParagraphTranslation() {
+    await saveParagraphConfig();
+    showParagraphConfirm = true;
+  }
+
+  async function confirmAndRunParagraphTranslation() {
+    showParagraphConfirm = false;
+    await translateAllParagraphs();
+  }
+
+  const filteredParagraphModels = $derived(
+    paragraphModelSearch.trim()
+      ? availableModels.filter(m =>
+          m.name.toLowerCase().includes(paragraphModelSearch.toLowerCase()) ||
+          m.id.toLowerCase().includes(paragraphModelSearch.toLowerCase()) ||
+          (m.provider || '').toLowerCase().includes(paragraphModelSearch.toLowerCase())
+        )
+      : availableModels
+  );
+
+  const paragraphModelLabel = $derived(
+    availableModels.find(m => m.id === paragraphModel)?.name || paragraphModel || 'انتخاب مدل'
+  );
+
   async function openStatsPopup() {
     if (selectedChapter) {
       chapterCostStats = await usageService.getChapterStats(selectedChapter.id);
@@ -497,15 +673,24 @@ Rules:
     reviewOpen = true;
   }
 
+  // Export modal state
+  let showExportModal = $state(false);
+  /** @type {'layer1'|'layer2'|'both'} */
+  let exportLayer = $state('layer1');
+  let exportIncludeSource = $state(false);
+
   function handleExport(/** @type {string} */ format) {
     if (!project || !chapters.length) return;
+    const layerLabel = exportLayer === 'layer1' ? 'ترجمه جمله‌ای' : exportLayer === 'layer2' ? 'ترجمه پاراگرافی' : 'هر دو لایه';
+    const opts = { outputLabel: layerLabel, includeSource: exportIncludeSource, layer: exportLayer };
     if (format === 'word') {
-      exportUtils.exportToWord(project, chapters, { outputLabel: 'ترجمه' });
+      exportUtils.exportToWord(project, chapters, opts);
     } else if (format === 'markdown') {
-      const md = exportUtils.exportToMarkdown(project, chapters, { outputLabel: 'ترجمه' });
+      const md = exportUtils.exportToMarkdown(project, chapters, opts);
       const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
       exportUtils.downloadFile(blob, `${project.title}.md`);
     }
+    showExportModal = false;
   }
 
   async function changeModel(/** @type {string} */ modelId) {
@@ -552,7 +737,7 @@ Rules:
   }
 
   function computeFinalOutput() {
-    return blocks.map(b => blockTranslationText(b)).join('\n\n');
+    return blocks.map(b => blockDisplayText(b)).join('\n\n');
   }
 
   /** Count sentences in a block with errors */
@@ -695,17 +880,10 @@ Rules:
       </div>
       
       <!-- Export -->
-      <div class="relative group/menu">
-        <button class="inline-flex items-center gap-1 h-8 px-3 rounded-md border border-input bg-background text-xs hover:bg-muted transition-colors" aria-label="خروجی">
-          خروجی <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9 6 21 18 21 18 9"/></svg>
-        </button>
-        <!-- Bridge element to prevent menu from closing when moving mouse from button to menu -->
-        <div class="hidden group-hover/menu:block absolute left-0 top-full w-full h-1"></div>
-        <div class="hidden group-hover/menu:block absolute left-0 top-[calc(100%+4px)] z-20 w-36 bg-popover border rounded-lg shadow-md py-1 text-xs">
-          <button onclick={() => handleExport('word')} class="w-full text-right px-3 py-2 hover:bg-muted">Word (.doc)</button>
-          <button onclick={() => handleExport('markdown')} class="w-full text-right px-3 py-2 hover:bg-muted">Markdown (.md)</button>
-        </div>
-      </div>
+      <button onclick={() => showExportModal = true}
+        class="inline-flex items-center gap-1 h-8 px-3 rounded-md border border-input bg-background text-xs hover:bg-muted transition-colors" aria-label="خروجی">
+        خروجی <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9 6 21 18 21 18 9"/></svg>
+      </button>
       
       <!-- Chat/Review -->
       <button onclick={() => reviewOpen = !reviewOpen}
@@ -757,15 +935,64 @@ Rules:
               {showDiff ? 'diff روشن' : 'diff خاموش'}
             </button>
 
+            <!-- Layer toggle -->
+            <div class="inline-flex items-center rounded-md border border-input bg-background overflow-hidden">
+              <button onclick={() => viewLayer = 1}
+                class="h-7 px-2 text-xs transition-colors {viewLayer === 1 ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}">
+                جمله
+              </button>
+              <button onclick={() => viewLayer = 2}
+                class="h-7 px-2 text-xs transition-colors border-r {viewLayer === 2 ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}">
+                پاراگراف
+              </button>
+            </div>
+
             {#if translating}
               <button onclick={stopTranslation}
                 class="inline-flex items-center gap-1 h-7 px-2.5 rounded text-xs bg-destructive/10 border border-destructive/30 text-destructive hover:bg-destructive/20 transition-colors">توقف</button>
             {:else}
-              <button onclick={translateAllBlocks} disabled={blocks.length === 0 || blocks.every(b => !b.content.trim()) || !translationModel}
-                class="inline-flex items-center gap-1.5 h-7 px-3 rounded text-xs bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors">
-                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
-                ترجمه همه
-              </button>
+              <!-- Translation button with dropdown mode selector -->
+              <div class="relative">
+                <button onclick={() => {
+                    if (translationMode === 'sentence') { showTranslateConfirm = true; }
+                    else { showParagraphConfirm = true; }
+                  }}
+                  disabled={blocks.length === 0 || blocks.every(b => !b.content.trim()) || (translationMode === 'sentence' && !translationModel)}
+                  class="inline-flex items-center gap-1.5 h-7 px-3 text-xs bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors rounded-md"
+                  title={translationMode === 'sentence' ? 'ترجمه جمله‌محور (لایه ۱)' : 'ترجمه پاراگراف‌محور (لایه ۲)'}>
+                  <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+                  {translationMode === 'sentence' ? 'ترجمه جمله‌ای' : 'ترجمه پاراگرافی'}
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <svg class="w-3 h-3 opacity-60 cursor-pointer hover:opacity-100" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"
+                    onclick={(e) => { e.stopPropagation(); showTranslateMenu = !showTranslateMenu; }}><path d="m6 9 6 6 6-6"/></svg>
+                </button>
+                {#if showTranslateMenu}
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <div class="absolute left-0 top-8 z-50 w-56 rounded-xl border bg-popover shadow-lg py-1"
+                    onmouseleave={() => showTranslateMenu = false}>
+                    <!-- Sentence mode -->
+                    <button onclick={() => { translationMode = 'sentence'; showTranslateMenu = false; }}
+                      class="w-full text-right text-xs px-3 py-2 hover:bg-muted transition-colors flex items-center gap-2">
+                      <svg class="w-3.5 h-3.5 shrink-0 {translationMode === 'sentence' ? 'text-primary' : 'text-transparent'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                      <span class="flex-1">ترجمه جمله‌ای</span>
+                      <span class="text-[10px] text-muted-foreground">لایه ۱</span>
+                    </button>
+                    <!-- Paragraph mode -->
+                    <div class="flex items-center hover:bg-muted transition-colors">
+                      <button onclick={() => { translationMode = 'paragraph'; showTranslateMenu = false; }}
+                        class="flex-1 text-right text-xs px-3 py-2 flex items-center gap-2">
+                        <svg class="w-3.5 h-3.5 shrink-0 {translationMode === 'paragraph' ? 'text-primary' : 'text-transparent'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+                        <span class="flex-1">ترجمه پاراگرافی</span>
+                        <span class="text-[10px] text-muted-foreground">لایه ۲</span>
+                      </button>
+                      <button onclick={() => { showParagraphSetup = true; showTranslateMenu = false; }}
+                        class="p-2 text-muted-foreground hover:text-foreground transition-colors shrink-0" title="تنظیمات پرامپت و مدل">
+                        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                      </button>
+                    </div>
+                  </div>
+                {/if}
+              </div>
             {/if}
           </div>
 
@@ -774,7 +1001,7 @@ Rules:
             <div class="px-4 py-2 border-b bg-muted/20 shrink-0">
               <div class="flex items-center justify-between text-xs text-muted-foreground mb-1">
                 <span class="truncate max-w-xs" title={currentSentenceText}>
-                  {doneSentences}/{totalSentences} جمله
+                  {doneSentences}/{totalSentences} {translationMode === 'paragraph' ? 'پاراگراف' : 'جمله'}
                   {#if currentSentenceText} — <span class="italic opacity-70 truncate">{currentSentenceText.slice(0, 40)}{currentSentenceText.length > 40 ? '…' : ''}</span>{/if}
                 </span>
                 <span class="shrink-0">{translationProgressPercent}٪</span>
@@ -794,7 +1021,7 @@ Rules:
                 <span class="text-xs font-medium text-muted-foreground">متن اصلی ({project?.sourceLanguage || '...'})</span>
               </div>
               <div bind:this={sourceScrollEl} onscroll={onSourceScroll} class="flex-1 overflow-y-auto p-3">
-                {#if showDiff}
+                {#if showDiff && blocks.some(b => b.content.trim())}
                   <!-- In diff mode: show read-only view with sentence-level hover sync -->
                   <div class="space-y-3">
                     {#each blocks as block (block.id)}
@@ -851,8 +1078,11 @@ Rules:
 
             <!-- Translation column (left) -->
             <div class="flex flex-col overflow-hidden">
-              <div class="px-3 py-1.5 border-b bg-muted/30 sticky top-0 z-10 shrink-0">
+              <div class="px-3 py-1.5 border-b bg-muted/30 sticky top-0 z-10 shrink-0 flex items-center gap-2">
                 <span class="text-xs font-medium text-muted-foreground">ترجمه ({project?.targetLanguage || '...'})</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded-full {viewLayer === 1 ? 'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300' : 'bg-violet-100 dark:bg-violet-950 text-violet-700 dark:text-violet-300'}">
+                  {viewLayer === 1 ? 'لایه جمله' : 'لایه پاراگراف'}
+                </span>
               </div>
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div
@@ -881,6 +1111,20 @@ Rules:
                     onmouseenter={() => hoveredBlockId = block.id}
                     onmouseleave={() => { hoveredBlockId = ''; hoveredSentenceIndex = -1; }}
                   >
+                    <!-- Layer 2: Paragraph translation view -->
+                    {#if viewLayer === 2}
+                      {#if block.paragraphTranslation}
+                        <p class="text-sm leading-relaxed whitespace-pre-wrap" dir="auto">{block.paragraphTranslation}</p>
+                      {:else if block.content?.trim()}
+                        <p class="text-xs text-muted-foreground italic flex items-center gap-1">
+                          <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                          ترجمه پاراگرافی ندارد
+                        </p>
+                      {:else}
+                        <p class="text-xs text-muted-foreground italic">—</p>
+                      {/if}
+                    <!-- Layer 1: Sentence translation view (existing) -->
+                    {:else}
                     <!-- Error badge -->
                     {#if errorCount > 0 && !translating}
                       <div class="flex items-center justify-between mb-1.5 px-1 py-0.5 rounded bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800">
@@ -1085,6 +1329,7 @@ Rules:
                         <p class="text-xs text-muted-foreground italic">—</p>
                       {/if}
                     {/if}
+                    {/if}
                   </div>
                 {/each}
               </div>
@@ -1209,6 +1454,231 @@ Rules:
         <button onclick={() => showNewChapterModal = false} class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">انصراف</button>
         <button onclick={addChapter} disabled={!newChapterTitle.trim()}
           class="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-40 transition-colors">ایجاد</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Paragraph Translation Setup Modal -->
+{#if showParagraphSetup}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={() => showParagraphSetup = false}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="bg-card border rounded-xl p-6 w-full max-w-lg mx-4 shadow-xl max-h-[90vh] overflow-y-auto" onclick={(e) => e.stopPropagation()}>
+      <h3 class="text-lg font-semibold mb-1" dir="rtl">تنظیمات ترجمه پاراگرافی</h3>
+      <p class="text-xs text-muted-foreground mb-4" dir="rtl">
+        هر پاراگراف همراه ترجمه لایه اول (در صورت وجود) طبق قالب زیر به مدل ارسال می‌شود. نتیجه در لایه دوم ذخیره می‌شود.
+      </p>
+      <div class="space-y-4" dir="rtl">
+        <!-- Model selection -->
+        <div class="space-y-1.5">
+          <span class="text-sm font-medium block">مدل LLM</span>
+          <div class="relative">
+            <button onclick={() => { showParagraphModelDropdown = !showParagraphModelDropdown; paragraphModelSearch = ''; }}
+              class="w-full h-9 text-sm px-3 rounded-md border border-input bg-background text-right truncate hover:bg-muted transition-colors">
+              {paragraphModelLabel}
+            </button>
+            {#if showParagraphModelDropdown}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div class="absolute right-0 top-10 z-50 w-full rounded-xl border bg-popover shadow-lg" onmouseleave={() => showParagraphModelDropdown = false}>
+                <div class="p-2 border-b">
+                  <input type="text" bind:value={paragraphModelSearch} placeholder="جستجوی مدل..." dir="rtl"
+                    class="w-full h-7 text-xs px-2 rounded-md border border-input bg-background focus:outline-none focus:ring-1 focus:ring-ring"/>
+                </div>
+                <div class="max-h-44 overflow-y-auto p-1">
+                  {#each filteredParagraphModels as m (m.id)}
+                    <button onclick={() => { paragraphModel = m.id; showParagraphModelDropdown = false; }}
+                      class="w-full text-right text-xs px-2 py-1.5 rounded-md hover:bg-muted transition-colors flex items-center gap-2 {paragraphModel === m.id ? 'bg-primary/10 font-medium' : ''}">
+                      <span class="text-muted-foreground text-[10px] shrink-0">{m.provider || ''}</span>
+                      <span class="truncate flex-1">{m.name}</span>
+                    </button>
+                  {/each}
+                  {#if filteredParagraphModels.length === 0}<p class="text-xs text-muted-foreground text-center py-3">مدلی پیدا نشد</p>{/if}
+                </div>
+              </div>
+            {/if}
+          </div>
+        </div>
+
+        <!-- System prompt -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-medium">دستورالعمل کلی (System Prompt)</span>
+            <button onclick={() => { paragraphSystemPrompt = ''; }}
+              class="text-[10px] text-muted-foreground hover:text-foreground transition-colors" title="بازگشت به پیش‌فرض">بازنشانی</button>
+          </div>
+          <textarea bind:value={paragraphSystemPrompt} rows="5" dir="rtl" placeholder={defaultParagraphSystemPrompt}
+            class="w-full px-3 py-2 rounded-md border border-input bg-background text-sm resize-y focus:outline-none focus:ring-2 focus:ring-ring min-h-[80px] font-mono text-xs leading-relaxed"></textarea>
+          <p class="text-[10px] text-muted-foreground">
+            این پرامپت به عنوان نقش سیستمی به مدل ارسال می‌شود. اگر خالی بگذارید، پیش‌فرض استفاده خواهد شد.
+          </p>
+        </div>
+
+        <!-- Base rules (always appended) -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-medium">قوانین پایه <span class="text-[10px] font-normal text-amber-600 dark:text-amber-400">(همیشه به انتهای دستورالعمل اضافه می‌شود)</span></span>
+            <button onclick={() => { paragraphBaseRules = ''; }}
+              class="text-[10px] text-muted-foreground hover:text-foreground transition-colors" title="بازگشت به پیش‌فرض">بازنشانی</button>
+          </div>
+          <textarea bind:value={paragraphBaseRules} rows="5" dir="rtl" placeholder={defaultParagraphBaseRules}
+            class="w-full px-3 py-2 rounded-md border border-amber-200 dark:border-amber-900/50 bg-amber-50/50 dark:bg-amber-950/20 text-sm resize-y focus:outline-none focus:ring-2 focus:ring-amber-400/50 min-h-[80px] font-mono text-xs leading-relaxed"></textarea>
+          <p class="text-[10px] text-muted-foreground">
+            این بخش همیشه به انتهای دستورالعمل کلی اضافه می‌شود — حتی اگر دستورالعمل سفارشی گذاشته باشید. اگر خالی بگذارید، پیش‌فرض استفاده می‌شود.
+          </p>
+        </div>
+
+        <!-- User message template -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-medium">قالب متن هر پاراگراف (User Prompt)</span>
+            <button onclick={() => { paragraphUserTemplate = ''; }}
+              class="text-[10px] text-muted-foreground hover:text-foreground transition-colors" title="بازگشت به پیش‌فرض">بازنشانی</button>
+          </div>
+          <textarea bind:value={paragraphUserTemplate} rows="6" dir="rtl" placeholder={defaultParagraphUserTemplate}
+            class="w-full px-3 py-2 rounded-md border border-input bg-background text-sm resize-y focus:outline-none focus:ring-2 focus:ring-ring min-h-[100px] font-mono text-xs leading-relaxed"></textarea>
+          <div class="text-[10px] text-muted-foreground space-y-1">
+            <p>از متغیرهای زیر در قالب استفاده کنید:</p>
+            <div class="flex flex-wrap gap-x-3 gap-y-0.5">
+              <span><code class="px-1 py-0.5 rounded bg-muted text-[10px]">{'{{original}}'}</code> متن اصلی پاراگراف</span>
+              <span><code class="px-1 py-0.5 rounded bg-muted text-[10px]">{'{{translation}}'}</code> ترجمه لایه اول</span>
+            </div>
+            <p class="mt-1">برای شرطی کردن (اگر ترجمه وجود داشت/نداشت):</p>
+            <code class="block px-2 py-1 rounded bg-muted text-[10px] whitespace-pre-wrap leading-relaxed">{'{{#if translation}}...{{else}}...{{/if}}'}</code>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex gap-2 justify-end mt-5" dir="rtl">
+        <button onclick={() => showParagraphSetup = false} class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">انصراف</button>
+        <button onclick={saveParagraphConfig} disabled={!paragraphModel}
+          class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors disabled:opacity-40"
+          title="ذخیره بدون شروع ترجمه">ذخیره</button>
+        <button onclick={startParagraphTranslation} disabled={!paragraphModel}
+          class="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-40 transition-colors">
+          شروع ترجمه پاراگرافی
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Sentence Translation Confirmation -->
+{#if showTranslateConfirm}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={() => showTranslateConfirm = false}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="bg-card border rounded-xl p-5 w-full max-w-sm mx-4 shadow-xl" onclick={(e) => e.stopPropagation()}>
+      <h3 class="text-base font-semibold mb-2" dir="rtl">شروع ترجمه جمله‌ای؟</h3>
+      <p class="text-sm text-muted-foreground mb-4" dir="rtl">
+        ترجمه لایه اول (جمله‌ای) روی تمام بندهای این فصل اجرا خواهد شد.
+      </p>
+      <div class="flex gap-2 justify-end" dir="rtl">
+        <button onclick={() => showTranslateConfirm = false} class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">انصراف</button>
+        <button onclick={() => { showTranslateConfirm = false; translateAllBlocks(); }}
+          class="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 transition-colors">
+          بله، شروع کن
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Paragraph Translation Confirmation -->
+{#if showParagraphConfirm}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={() => showParagraphConfirm = false}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="bg-card border rounded-xl p-5 w-full max-w-sm mx-4 shadow-xl" onclick={(e) => e.stopPropagation()}>
+      <h3 class="text-base font-semibold mb-2" dir="rtl">شروع ترجمه پاراگرافی؟</h3>
+      <p class="text-sm text-muted-foreground mb-1" dir="rtl">
+        ترجمه لایه دوم (پاراگرافی) روی تمام بندهای این فصل اجرا خواهد شد.
+      </p>
+      <p class="text-xs text-muted-foreground mb-4" dir="rtl">
+        مدل: <span class="font-medium text-foreground">{paragraphModelLabel}</span>
+      </p>
+      <div class="flex gap-2 justify-end" dir="rtl">
+        <button onclick={() => showParagraphConfirm = false} class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">انصراف</button>
+        <button onclick={confirmAndRunParagraphTranslation}
+          class="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 transition-colors">
+          بله، شروع کن
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Export Modal -->
+{#if showExportModal}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={() => showExportModal = false}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="bg-card border rounded-xl p-6 w-full max-w-sm mx-4 shadow-xl" onclick={(e) => e.stopPropagation()}>
+      <h3 class="text-base font-semibold mb-4" dir="rtl">تنظیمات خروجی</h3>
+      <div class="space-y-4" dir="rtl">
+
+        <!-- Layer selection -->
+        <div class="space-y-2">
+          <span class="text-sm font-medium block">لایه ترجمه</span>
+          <div class="space-y-1.5">
+            <button onclick={() => exportLayer = 'layer1'}
+              class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-sm transition-colors {exportLayer === 'layer1' ? 'border-primary bg-primary/5 text-primary' : 'border-input hover:bg-muted'}">
+              <svg class="w-4 h-4 shrink-0 {exportLayer === 'layer1' ? 'text-primary' : 'text-transparent'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>
+              <div class="flex-1 text-right">
+                <div class="font-medium">ترجمه جمله‌ای (لایه ۱)</div>
+                <div class="text-xs text-muted-foreground">ترجمه پیش‌فرض جمله به جمله</div>
+              </div>
+            </button>
+            <button onclick={() => exportLayer = 'layer2'}
+              class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-sm transition-colors {exportLayer === 'layer2' ? 'border-primary bg-primary/5 text-primary' : 'border-input hover:bg-muted'}">
+              <svg class="w-4 h-4 shrink-0 {exportLayer === 'layer2' ? 'text-primary' : 'text-transparent'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>
+              <div class="flex-1 text-right">
+                <div class="font-medium">ترجمه پاراگرافی (لایه ۲)</div>
+                <div class="text-xs text-muted-foreground">نسخه بازآفرینی‌شده با مدل سفارشی</div>
+              </div>
+            </button>
+            <button onclick={() => exportLayer = 'both'}
+              class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-sm transition-colors {exportLayer === 'both' ? 'border-primary bg-primary/5 text-primary' : 'border-input hover:bg-muted'}">
+              <svg class="w-4 h-4 shrink-0 {exportLayer === 'both' ? 'text-primary' : 'text-transparent'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>
+              <div class="flex-1 text-right">
+                <div class="font-medium">هر دو لایه</div>
+                <div class="text-xs text-muted-foreground">لایه ۲ به عنوان اصلی + لایه ۱ در زیر هر بند</div>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Include source -->
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="flex items-center justify-between py-2 border-t">
+          <span class="text-sm">شامل متن اصلی</span>
+          <button onclick={() => exportIncludeSource = !exportIncludeSource}
+            class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {exportIncludeSource ? 'bg-primary' : 'bg-muted-foreground/30'}">
+            <span class="inline-block h-4 w-4 rounded-full bg-white shadow transition-transform {exportIncludeSource ? 'translate-x-4' : 'translate-x-0.5'}"></span>
+          </button>
+        </div>
+
+      </div>
+
+      <div class="flex gap-2 justify-end mt-5" dir="rtl">
+        <button onclick={() => showExportModal = false} class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">انصراف</button>
+        <button onclick={() => handleExport('markdown')}
+          class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">
+          Markdown
+        </button>
+        <button onclick={() => handleExport('word')}
+          class="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 transition-colors">
+          Word (.doc)
+        </button>
       </div>
     </div>
   </div>

@@ -1,23 +1,38 @@
 /**
- * Compute the final output text for a chapter.
- * For editorial chapters with segmentData, computes from accepted/rejected/edited segments.
- * For all other chapters, returns outputText directly.
- * @param {any} chapter
+ * Get layer 1 (sentence) translation text for a block.
+ * @param {any} b
  * @returns {string}
  */
-function getFinalOutputText(chapter) {
+function getBlockLayer1(b) {
+  if (b.status === 'edited' && b.editedTranslation) return b.editedTranslation;
+  if (b.sentences && b.sentences.length > 0) {
+    return b.sentences.map(s => s.translation).filter(Boolean).join(' ');
+  }
+  return b.translation || '';
+}
+
+/**
+ * Compute the final output text for a chapter.
+ * @param {any} chapter
+ * @param {'layer1'|'layer2'|'both'} [layer='layer1']
+ * @returns {string}
+ */
+function getFinalOutputText(chapter, layer = 'layer1') {
   // Use blocks-based output if available (new editor format)
   if (chapter.blocks && chapter.blocks.length > 0) {
     return chapter.blocks.map(b => {
-      // If block has edited translation, use it
-      if (b.status === 'edited' && b.editedTranslation) return b.editedTranslation;
-      // If block has sentences, join them
-      if (b.sentences && b.sentences.length > 0) {
-        return b.sentences.map(s => s.translation).filter(Boolean).join(' ');
+      if (layer === 'layer2') {
+        return b.paragraphTranslation || getBlockLayer1(b) || b.content || '';
       }
-      // Fallback to legacy fields
-      return b.translation || b.content || '';
-    }).join('\n\n');
+      if (layer === 'both') {
+        const l1 = getBlockLayer1(b);
+        const l2 = b.paragraphTranslation || '';
+        if (l1 && l2 && l1 !== l2) return `${l2}\n\n【لایه ۱】\n${l1}`;
+        return l2 || l1 || b.content || '';
+      }
+      // layer1 (default)
+      return getBlockLayer1(b) || b.content || '';
+    }).filter(Boolean).join('\n\n');
   }
   // Legacy segmentData format
   if (chapter.segmentData && chapter.segmentData.length > 0) {
@@ -78,10 +93,10 @@ export const exportUtils = {
    * Export chapters to Markdown.
    * @param {any} project
    * @param {any[]} chapters
-   * @param {{ includeSource?: boolean, outputLabel?: string }} options
+   * @param {{ includeSource?: boolean, outputLabel?: string, layer?: 'layer1'|'layer2'|'both' }} options
    */
   exportToMarkdown(project, chapters, options = {}) {
-    const { includeSource = true, outputLabel = 'خروجی' } = options;
+    const { includeSource = true, outputLabel = '\u062e\u0631\u0648\u062c\u06cc', layer = 'layer1' } = options;
     let md = `# ${project.title}\n\n`;
 
     if (project.description) {
@@ -94,10 +109,10 @@ export const exportUtils = {
       md += `## ${chapter.title}\n\n`;
 
       if (includeSource && chapter.sourceText) {
-        md += `### متن اصلی\n\n${chapter.sourceText}\n\n`;
+        md += `### \u0645\u062a\u0646 \u0627\u0635\u0644\u06cc\n\n${chapter.sourceText}\n\n`;
       }
 
-      const output = getFinalOutputText(chapter);
+      const output = getFinalOutputText(chapter, layer);
       if (output) {
         md += `### ${outputLabel}\n\n${output}\n\n`;
       }
@@ -124,10 +139,10 @@ export const exportUtils = {
    * Generate Word-compatible HTML for a project export.
    * @param {any} project
    * @param {any[]} chapters
-   * @param {{ includeSource?: boolean, outputLabel?: string }} options
+   * @param {{ includeSource?: boolean, outputLabel?: string, layer?: 'layer1'|'layer2'|'both' }} options
    */
   generateWordHtml(project, chapters, options = {}) {
-    const { includeSource = false, outputLabel = 'خروجی' } = options;
+    const { includeSource = false, outputLabel = '\u062e\u0631\u0648\u062c\u06cc', layer = 'layer1' } = options;
     const isRtl = true; // Default RTL for Persian content
 
     let html = `
@@ -167,7 +182,7 @@ export const exportUtils = {
         html += `</div>`;
       }
 
-      const output = getFinalOutputText(chapter);
+      const output = getFinalOutputText(chapter, layer);
       if (output) {
         html += `<div class="output-section">`;
         if (includeSource) html += `<h3>${outputLabel}</h3>`;
@@ -188,7 +203,7 @@ export const exportUtils = {
    * Export project to Word (.doc) file.
    * @param {any} project
    * @param {any[]} chapters
-   * @param {{ includeSource?: boolean, outputLabel?: string }} options
+   * @param {{ includeSource?: boolean, outputLabel?: string, layer?: 'layer1'|'layer2'|'both' }} options
    */
   exportToWord(project, chapters, options = {}) {
     const html = this.generateWordHtml(project, chapters, options);
