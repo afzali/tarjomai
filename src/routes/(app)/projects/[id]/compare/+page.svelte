@@ -231,7 +231,7 @@ IMPORTANT OUTPUT RULES:
 					modelId,
 					[
 						{ role: 'system', content: systemPrompt },
-						{ role: 'user', content: `Translate this sentence:\n\n${sampleText}` }
+						{ role: 'user', content: sampleText }
 					],
 					{ temperature: 0, seed: 42, top_p: 1, signal: controller.signal }
 				);
@@ -243,10 +243,14 @@ IMPORTANT OUTPUT RULES:
 					modelStatuses[i].error = 'لغو شده';
 				} else if (result.success) {
 					modelStatuses[i].status = 'success';
+					if (result.truncated) {
+						modelStatuses[i].error = 'خروجی ناقص (سقف توکن)';
+					}
 					results = [...results, {
 						modelId,
 						modelName: modelStatuses[i].modelName,
 						translation: result.content,
+						truncated: !!result.truncated,
 						error: null,
 						rating: 0
 					}];
@@ -579,10 +583,18 @@ IMPORTANT OUTPUT RULES:
 						<CardHeader class="pb-2">
 							<div class="flex items-center justify-between">
 								<CardTitle class="text-lg">{result.modelName}</CardTitle>
-								<span class="text-xs px-2 py-0.5 bg-purple-100 dark:bg-purple-900 text-purple-800 dark:text-purple-200 rounded-full">AI</span>
+								<div class="flex items-center gap-1.5">
+									{#if result.truncated}
+										<span class="text-xs px-2 py-0.5 bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200 rounded-full" title="خروجی به سقف توکن رسید و ممکن است ناقص باشد">⚠ ناقص</span>
+									{/if}
+									<span class="text-xs px-2 py-0.5 bg-purple-100 dark:bg-purple-900 text-purple-800 dark:text-purple-200 rounded-full">AI</span>
+								</div>
 							</div>
 						</CardHeader>
 						<CardContent class="space-y-3">
+							{#if result.truncated}
+								<p class="text-xs text-amber-600 dark:text-amber-400">این خروجی به سقف توکن رسید و ناقص است. برای دیدن نتیجه کامل دوباره مقایسه را اجرا کنید.</p>
+							{/if}
 							<p class="text-sm whitespace-pre-wrap" dir="auto">{result.translation}</p>
 						</CardContent>
 					</Card>

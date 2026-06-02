@@ -71,9 +71,13 @@ export const openrouterService = {
             model,
             messages,
             temperature: options.temperature ?? 0,
-            max_tokens: options.max_tokens ?? 4096,
+            max_tokens: options.max_tokens ?? 16000,
             seed: options.seed ?? 42,
-            top_p: options.top_p ?? 1
+            top_p: options.top_p ?? 1,
+            // For reasoning-capable models (Gemini Pro, o-series, R1, ...): by default
+            // we exclude the chain-of-thought from the response so it never leaks into
+            // the translation output. Callers can override via options.reasoning.
+            reasoning: options.reasoning ?? { exclude: true }
           })
         });
 
@@ -111,9 +115,22 @@ export const openrouterService = {
           }
         }
         
+        const choice = data.choices?.[0];
+        const finishReason = choice?.finish_reason || null;
+        const msg = choice?.message || {};
+        // Reasoning models put their final answer in content; reasoning (if any)
+        // is returned separately and must NOT be mixed into the translation.
+        const content = msg.content || '';
         return {
           success: true,
-          content: data.choices?.[0]?.message?.content || '',
+          content,
+          reasoning: msg.reasoning || '',
+          finishReason,
+          // true when the model hit the token limit and the output is cut off
+          truncated: finishReason === 'length',
+          // true when there is no usable content (e.g. model spent the whole
+          // budget on reasoning) — caller may want to retry with more tokens
+          empty: !content.trim(),
           usage: data.usage
         };
       } catch (error) {
@@ -147,9 +164,10 @@ export const openrouterService = {
           model,
           messages,
           temperature: options.temperature ?? 0,
-          max_tokens: options.max_tokens ?? 4096,
+          max_tokens: options.max_tokens ?? 16000,
           seed: options.seed ?? 42,
           top_p: options.top_p ?? 1,
+          reasoning: options.reasoning ?? { exclude: true },
           stream: true
         })
       });
