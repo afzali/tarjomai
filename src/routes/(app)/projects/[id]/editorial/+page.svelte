@@ -93,8 +93,8 @@
   let reviewQuote = $state('');
 
   // Model for editing
-  let editingModel = $state('google/gemini-flash-1.5');
-  let reviewModel = $state('google/gemini-flash-1.5');
+  let editingModel = $state('google/gemini-3.5-flash');
+  let reviewModel = $state('google/gemini-3.5-flash');
   let availableModels = $state(allModels);
   let modelSearch = $state('');
   let showModelDropdown = $state(false);

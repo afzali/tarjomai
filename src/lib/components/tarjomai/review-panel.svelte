@@ -28,7 +28,7 @@
     sourceText = '',
     outputText = '',
     apiKey = '',
-    defaultModel = 'google/gemini-flash-1.5',
+    defaultModel = 'google/gemini-3.5-flash',
     quote = $bindable(''),
     onClose = null
   } = $props();

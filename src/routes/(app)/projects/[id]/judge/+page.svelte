@@ -46,7 +46,7 @@
 	let availableModels = $state(fallbackModels);
 	let loadingModels = $state(false);
 	let judgeSearchQuery = $state('');
-	let judgeModel = $state('anthropic/claude-sonnet-4');
+	let judgeModel = $state('google/gemini-3.1-pro-preview');
 	let judging = $state(false);
 	let showJudgePrompt = $state(false);
 	let judgePrompt = $state(`You are an expert translation evaluator. Compare the following translations and provide a detailed analysis.

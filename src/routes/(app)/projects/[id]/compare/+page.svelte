@@ -68,7 +68,7 @@
 	// Group models by provider for display
 	const modelsByProvider = $derived(getModelsByProvider(filteredModels));
 
-	let selectedModels = $state(['anthropic/claude-sonnet-4', 'openai/gpt-4.1']);
+	let selectedModels = $state(['google/gemini-3.1-pro-preview', 'google/gemini-3.5-flash']);
 
 	onMount(async () => {
 		const data = await currentProjectStore.load(parseInt(projectId));

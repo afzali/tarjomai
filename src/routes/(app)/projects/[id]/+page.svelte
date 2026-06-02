@@ -88,7 +88,7 @@
 
   // Model for translation
   let translationModel = $state('');
-  let reviewModel = $state('anthropic/claude-sonnet-4');
+  let reviewModel = $state('google/gemini-3.5-flash');
   let availableModels = $state(allModels);
   let modelSearch = $state('');
   let showModelDropdown = $state(false);

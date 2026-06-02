@@ -109,7 +109,7 @@
     if (!prompt) prompt = defaultGlossaryPrompt;
     if (settings?.openRouterApiKey) {
       fetchModels(settings.openRouterApiKey).then(m => { availableModels = m; });
-      if (!model) model = settings.defaultModels?.translation || 'anthropic/claude-sonnet-4';
+      if (!model) model = settings.defaultModels?.translation || 'google/gemini-3.1-pro-preview';
       reviewModel = settings.defaultModels?.review || model;
     }
   });

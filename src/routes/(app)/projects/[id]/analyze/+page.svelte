@@ -40,7 +40,7 @@
 	let availableModels = $state(fallbackModels);
 	let loadingModels = $state(false);
 	let analyzeModelSearchQuery = $state('');
-	let analyzeModel = $state('anthropic/claude-sonnet-4');
+	let analyzeModel = $state('google/gemini-3.1-pro-preview');
 
 	const filteredAnalyzeModels = $derived(
 		analyzeModelSearchQuery.trim()

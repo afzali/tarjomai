@@ -92,7 +92,7 @@
 				if (rules.glossaryModel) glossaryModel = rules.glossaryModel;
 				if (glossaryEntries.length > 0) showGlossary = true;
 			}
-			selectedModel = data.project?.defaultModel || 'anthropic/claude-sonnet-4';
+			selectedModel = data.project?.defaultModel || 'google/gemini-3.1-pro-preview';
 		}
 		presets = await rulesService.getPresets();
 
@@ -209,7 +209,7 @@
 					dir="auto"
 					class="mb-2"
 				/>
-				<Select.Root type="single" value={selectedModel} onValueChange={(v) => selectedModel = v || 'anthropic/claude-sonnet-4'}>
+				<Select.Root type="single" value={selectedModel} onValueChange={(v) => selectedModel = v || 'google/gemini-3.1-pro-preview'}>
 					<Select.Trigger class="w-full">{selectedModelLabel}</Select.Trigger>
 					<Select.Content class="max-h-[300px] overflow-y-auto">
 						{#each filteredModels as model}

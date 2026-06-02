@@ -42,10 +42,10 @@ export const settingsService = {
       openRouterApiKey: '',
       uiLanguage: 'fa',
       defaultModels: {
-        styleAnalysis: 'anthropic/claude-sonnet-4',
-        translation: 'anthropic/claude-sonnet-4',
-        scoring: 'anthropic/claude-sonnet-4',
-        editorial: 'anthropic/claude-sonnet-4'
+        styleAnalysis: 'google/gemini-3.1-pro-preview',
+        translation: 'google/gemini-3.1-pro-preview',
+        scoring: 'google/gemini-3.1-pro-preview',
+        editorial: 'google/gemini-3.5-flash'
       },
       defaultSourceLanguage: 'en',
       defaultTargetLanguage: 'fa',

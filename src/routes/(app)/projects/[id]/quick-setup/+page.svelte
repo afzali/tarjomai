@@ -19,7 +19,7 @@
 	let project = $state(null);
 	let saving = $state(false);
 
-	let selectedModel = $state('anthropic/claude-sonnet-4');
+	let selectedModel = $state('google/gemini-3.1-pro-preview');
 	let tone = $state('formal');
 	let vocabularyLevel = $state('medium');
 	let translationType = $state('balanced');
