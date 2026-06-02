@@ -8,7 +8,7 @@
   import { openrouterService } from '$lib/services/openrouter.service.js';
   import { exportUtils } from '$lib/utils/export.utils.js';
   import { fetchModels } from '$lib/stores/models.store.js';
-  import { allModels } from '$lib/models.js';
+  import { allModels, resolveDefaultModel, DEFAULT_MODELS } from '$lib/models.js';
   import BlockEditor from '$lib/components/tarjomai/block-editor.svelte';
   import DiffView from '$lib/components/tarjomai/diff-view.svelte';
   import FileTypeIcon from '$lib/components/tarjomai/file-type-icon.svelte';
@@ -88,7 +88,7 @@
 
   // Model for translation
   let translationModel = $state('');
-  let reviewModel = $state('google/gemini-3.5-flash');
+  let reviewModel = $state(DEFAULT_MODELS.review);
   let availableModels = $state(allModels);
   let modelSearch = $state('');
   let showModelDropdown = $state(false);
@@ -214,10 +214,10 @@
     // Set default model
     if (project.defaultModel) {
       translationModel = project.defaultModel;
-      reviewModel = project.chatModel || project.defaultModel;
-    } else if (settings?.defaultModels?.translation) {
-      translationModel = settings.defaultModels.translation;
-      reviewModel = settings.defaultModels?.review || settings.defaultModels.translation;
+      reviewModel = project.chatModel || resolveDefaultModel(settings, 'review');
+    } else {
+      translationModel = resolveDefaultModel(settings, 'translation');
+      reviewModel = resolveDefaultModel(settings, 'review');
     }
 
     // Load paragraph translation config

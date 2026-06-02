@@ -110,3 +110,24 @@ export function getModelName(modelId) {
 export function modelsToSelectItems(models = allModels) {
 	return models.map(m => ({ value: m.id, label: m.name }));
 }
+
+// Single source of truth for the app's built-in default model choices.
+// Used when the user hasn't set their own defaults in Settings.
+export const DEFAULT_MODELS = {
+	translation: 'google/gemini-3.1-pro-preview',
+	styleAnalysis: 'google/gemini-3.1-pro-preview',
+	scoring: 'google/gemini-3.1-pro-preview',
+	editorial: 'google/gemini-3.5-flash',
+	review: 'google/gemini-3.5-flash'
+};
+
+/**
+ * Resolve a default model for a given purpose, preferring the user's saved
+ * settings and falling back to the built-in defaults.
+ * @param {any} settings  the settings object (may be null)
+ * @param {keyof typeof DEFAULT_MODELS} purpose
+ * @returns {string}
+ */
+export function resolveDefaultModel(settings, purpose) {
+	return settings?.defaultModels?.[purpose] || DEFAULT_MODELS[purpose] || DEFAULT_MODELS.translation;
+}

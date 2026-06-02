@@ -10,7 +10,7 @@
 	import { Textarea } from '$lib/components/ui-rtl/textarea';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui-rtl/card';
 	import * as Select from '$lib/components/ui-rtl/select';
-	import { allModels as fallbackModels, modelsToSelectItems } from '$lib/models.js';
+	import { allModels as fallbackModels, modelsToSelectItems, resolveDefaultModel, DEFAULT_MODELS } from '$lib/models.js';
 	import { fetchModels } from '$lib/stores/models.store.js';
 	import { settingsStore } from '$lib/stores/settings.store.js';
 	import { toneOptions, vocabularyOptions, translationTypeOptions, getOptionLabel } from '$lib/translationOptions.js';
@@ -19,7 +19,7 @@
 	let project = $state(null);
 	let saving = $state(false);
 
-	let selectedModel = $state('google/gemini-3.1-pro-preview');
+	let selectedModel = $state(DEFAULT_MODELS.translation);
 	let tone = $state('formal');
 	let vocabularyLevel = $state('medium');
 	let translationType = $state('balanced');
@@ -52,6 +52,7 @@
 		const data = await currentProjectStore.load(parseInt(projectId));
 		if (data) {
 			project = data.project;
+			if (data.project?.defaultModel) selectedModel = data.project.defaultModel;
 			if (data.config) {
 				tone = data.config.tone?.[0] || 'formal';
 				vocabularyLevel = data.config.vocabularyLevel || 'medium';
@@ -62,6 +63,7 @@
 
 		// Fetch models from OpenRouter API
 		settings = await settingsStore.load();
+		if (!project?.defaultModel) selectedModel = resolveDefaultModel(settings, 'translation');
 		if (settings?.openRouterApiKey) {
 			loadingModels = true;
 			try {

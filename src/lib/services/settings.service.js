@@ -1,4 +1,5 @@
 import db from '$lib/db/index.js';
+import { DEFAULT_MODELS } from '$lib/models.js';
 
 const SETTINGS_ID = 1;
 
@@ -42,10 +43,11 @@ export const settingsService = {
       openRouterApiKey: '',
       uiLanguage: 'fa',
       defaultModels: {
-        styleAnalysis: 'google/gemini-3.1-pro-preview',
-        translation: 'google/gemini-3.1-pro-preview',
-        scoring: 'google/gemini-3.1-pro-preview',
-        editorial: 'google/gemini-3.5-flash'
+        styleAnalysis: DEFAULT_MODELS.styleAnalysis,
+        translation: DEFAULT_MODELS.translation,
+        scoring: DEFAULT_MODELS.scoring,
+        editorial: DEFAULT_MODELS.editorial,
+        review: DEFAULT_MODELS.review
       },
       defaultSourceLanguage: 'en',
       defaultTargetLanguage: 'fa',

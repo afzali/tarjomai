@@ -4,6 +4,7 @@
   import { settingsStore } from '$lib/stores/settings.store.js';
   import { fetchModels } from '$lib/stores/models.store.js';
   import { allModels } from '$lib/models.js';
+  import { resolveDefaultModel } from '$lib/models.js';
   import { marked } from 'marked';
   import {
     defaultGlossaryPrompt,
@@ -109,8 +110,8 @@
     if (!prompt) prompt = defaultGlossaryPrompt;
     if (settings?.openRouterApiKey) {
       fetchModels(settings.openRouterApiKey).then(m => { availableModels = m; });
-      if (!model) model = settings.defaultModels?.translation || 'google/gemini-3.1-pro-preview';
-      reviewModel = settings.defaultModels?.review || model;
+      if (!model) model = resolveDefaultModel(settings, 'translation');
+      reviewModel = resolveDefaultModel(settings, 'review');
     }
   });
 

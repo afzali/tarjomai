@@ -116,6 +116,20 @@ db.version(7).stores({
   folders: '++id, name, parentId, createdAt, updatedAt'
 });
 
+// v8: add modelCache table — persists the OpenRouter model catalogue locally
+// so the list stays fresh across sessions and can be refreshed on demand.
+db.version(8).stores({
+  settings: '++id',
+  projects: '++id, title, createdAt, updatedAt, setupStep, operationType, folderId',
+  chapters: '++id, projectId, order, status',
+  operationConfig: '++id, projectId, operationType, name, isPreset',
+  presets: '++id, name, createdAt, operationType',
+  usageHistory: '++id, model, timestamp, projectId, chapterId, date',
+  reviewMessages: '++id, chapterId, role, createdAt',
+  folders: '++id, name, parentId, createdAt, updatedAt',
+  modelCache: '++id'
+});
+
 // Setup steps:
 // Translation guided:  'created' -> 'analyze' -> 'compare' -> 'completed'
 // Translation quick:   'created' -> 'quick-setup' -> 'completed'

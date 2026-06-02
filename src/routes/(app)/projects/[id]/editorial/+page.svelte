@@ -10,7 +10,7 @@
   import { openrouterService } from '$lib/services/openrouter.service.js';
   import { exportUtils } from '$lib/utils/export.utils.js';
   import { fetchModels } from '$lib/stores/models.store.js';
-  import { allModels } from '$lib/models.js';
+  import { allModels, resolveDefaultModel, DEFAULT_MODELS } from '$lib/models.js';
   import BlockEditor from '$lib/components/tarjomai/block-editor.svelte';
   import FileTypeIcon from '$lib/components/tarjomai/file-type-icon.svelte';
   import ReviewPanel from '$lib/components/tarjomai/review-panel.svelte';
@@ -93,8 +93,8 @@
   let reviewQuote = $state('');
 
   // Model for editing
-  let editingModel = $state('google/gemini-3.5-flash');
-  let reviewModel = $state('google/gemini-3.5-flash');
+  let editingModel = $state(DEFAULT_MODELS.editorial);
+  let reviewModel = $state(DEFAULT_MODELS.review);
   let availableModels = $state(allModels);
   let modelSearch = $state('');
   let showModelDropdown = $state(false);
@@ -159,9 +159,9 @@
     } else if (project.defaultModel) {
       editingModel = project.defaultModel;
       reviewModel = project.defaultModel;
-    } else if (settings?.defaultModels?.editorial) {
-      editingModel = settings.defaultModels.editorial;
-      reviewModel = settings.defaultModels?.review || settings.defaultModels.editorial;
+    } else {
+      editingModel = resolveDefaultModel(settings, 'editorial');
+      reviewModel = resolveDefaultModel(settings, 'review');
     }
 
     if (chapters.length > 0) selectChapter(chapters[0]);

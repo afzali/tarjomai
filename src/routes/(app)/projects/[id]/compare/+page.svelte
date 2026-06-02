@@ -14,7 +14,7 @@
 	import { Input } from '$lib/components/ui-rtl/input';
 	import { Label } from '$lib/components/ui-rtl/label';
 	import * as Select from '$lib/components/ui-rtl/select';
-	import { allModels as fallbackModels, getModelsByProvider, getModelName } from '$lib/models.js';
+	import { allModels as fallbackModels, getModelsByProvider, getModelName, resolveDefaultModel } from '$lib/models.js';
 	import { fetchModels } from '$lib/stores/models.store.js';
 
 	let projectId = $derived($page.params.id);
@@ -85,6 +85,13 @@
 			}
 		}
 		settings = await settingsStore.load();
+		// Seed the comparison with the user's default translation model (plus a fast Gemini)
+		{
+			const def = resolveDefaultModel(settings, 'translation');
+			if (def && !selectedModels.includes(def)) {
+				selectedModels = [def, ...selectedModels.filter(m => m !== def)].slice(0, 2);
+			}
+		}
 
 		// Fetch models from OpenRouter API
 		if (settings?.openRouterApiKey) {

@@ -16,7 +16,7 @@
 	import * as Select from '$lib/components/ui-rtl/select';
 	import * as Tabs from '$lib/components/ui-rtl/tabs';
 	import { toneOptions, vocabularyOptions, translationTypeOptions, structureOptions, getOptionLabel } from '$lib/translationOptions.js';
-	import { allModels as fallbackModels, getModelName } from '$lib/models.js';
+	import { allModels as fallbackModels, getModelName, resolveDefaultModel, DEFAULT_MODELS } from '$lib/models.js';
 	import { fetchModels } from '$lib/stores/models.store.js';
 
 	let projectId = $derived($page.params.id);
@@ -40,7 +40,7 @@
 	let availableModels = $state(fallbackModels);
 	let loadingModels = $state(false);
 	let analyzeModelSearchQuery = $state('');
-	let analyzeModel = $state('google/gemini-3.1-pro-preview');
+	let analyzeModel = $state(DEFAULT_MODELS.styleAnalysis);
 
 	const filteredAnalyzeModels = $derived(
 		analyzeModelSearchQuery.trim()
@@ -125,9 +125,7 @@ Respond ONLY with valid JSON.`);
 		}
 
 		// Use default model from settings if available
-		if (settings?.defaultModels?.styleAnalysis) {
-			analyzeModel = settings.defaultModels.styleAnalysis;
-		}
+		analyzeModel = resolveDefaultModel(settings, 'styleAnalysis');
 	});
 
 	// Auto-save wizard data when values change

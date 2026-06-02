@@ -3,6 +3,8 @@
 	import { settingsStore } from '$lib/stores/settings.store.js';
 	import { openrouterService } from '$lib/services/openrouter.service.js';
 	import { usageService } from '$lib/services/usage.service.js';
+	import { modelsStore, refreshModels } from '$lib/stores/models.store.js';
+	import { allModels as fallbackModels, DEFAULT_MODELS } from '$lib/models.js';
 	import { Button } from '$lib/components/ui-rtl/button';
 	import { Input } from '$lib/components/ui-rtl/input';
 	import { Label } from '$lib/components/ui-rtl/label';
@@ -24,6 +26,40 @@
 	let loadingActivity = $state(false);
 	let localUsage = $state(null);
 	let loadingLocalUsage = $state(false);
+
+	// Model catalogue (persisted, refreshable)
+	let availableModels = $state(fallbackModels);
+	let modelsLastUpdated = $state('');
+	let refreshingModels = $state(false);
+	let refreshModelsMsg = $state('');
+	let modelSearch = $state('');
+
+	// Default models per purpose
+	const purposeLabels = {
+		translation: 'ترجمه',
+		styleAnalysis: 'تحلیل سبک',
+		scoring: 'داوری',
+		editorial: 'ویرایش',
+		review: 'گفتگو و بررسی'
+	};
+	let defaultModels = $state({ ...DEFAULT_MODELS });
+	let savingDefaults = $state(false);
+	let defaultsSaved = $state(false);
+	/** @type {Record<string, boolean>} */
+	let openModelPicker = $state({});
+
+	const filteredModelItems = $derived(
+		modelSearch.trim()
+			? availableModels.filter(m =>
+				m.name.toLowerCase().includes(modelSearch.toLowerCase()) ||
+				m.id.toLowerCase().includes(modelSearch.toLowerCase()) ||
+				(m.provider || '').toLowerCase().includes(modelSearch.toLowerCase()))
+			: availableModels
+	);
+
+	function modelLabelFor(/** @type {string} */ id) {
+		return availableModels.find(m => m.id === id)?.name || id || 'انتخاب مدل';
+	}
 
 	// Custom language addition
 	let newLangValue = $state('');
@@ -57,11 +93,46 @@
 		defaultSourceLanguage = settings?.defaultSourceLanguage || 'en';
 		defaultTargetLanguage = settings?.defaultTargetLanguage || 'fa';
 		customLanguageItems = settings?.customLanguages || [];
-		
+		defaultModels = { ...DEFAULT_MODELS, ...(settings?.defaultModels || {}) };
+
+		// Load persisted model catalogue (no network call)
+		const cached = await modelsStore.fetch(apiKey);
+		if (cached?.length > 0) availableModels = cached;
+		modelsLastUpdated = await modelsStore.getLastUpdated();
+
 		if (apiKey) {
 			loadCredits();
 		}
 	});
+
+	async function doRefreshModels() {
+		if (!apiKey) { refreshModelsMsg = 'ابتدا API Key را وارد و ذخیره کنید'; return; }
+		refreshingModels = true;
+		refreshModelsMsg = '';
+		const models = await refreshModels(apiKey);
+		if (models.length > 0) {
+			availableModels = models;
+			modelsLastUpdated = await modelsStore.getLastUpdated();
+			refreshModelsMsg = `${models.length} مدل به‌روزرسانی شد`;
+		} else {
+			refreshModelsMsg = 'به‌روزرسانی ناموفق بود';
+		}
+		refreshingModels = false;
+	}
+
+	async function saveDefaultModels() {
+		savingDefaults = true;
+		await settingsStore.save({ ...settings, defaultModels: { ...defaultModels } });
+		settings = await settingsStore.load();
+		savingDefaults = false;
+		defaultsSaved = true;
+		setTimeout(() => defaultsSaved = false, 2000);
+	}
+
+	function pickModel(/** @type {string} */ purpose, /** @type {string} */ id) {
+		defaultModels = { ...defaultModels, [purpose]: id };
+		openModelPicker = { ...openModelPicker, [purpose]: false };
+	}
 
 	async function loadCredits() {
 		if (!apiKey) return;
@@ -196,6 +267,83 @@
 						{testResult.success ? '✓ اتصال موفق' : `✗ ${testResult.error}`}
 					</p>
 				{/if}
+			</CardContent>
+		</Card>
+
+		<!-- Model catalogue -->
+		<Card>
+			<CardHeader>
+				<CardTitle>لیست مدل‌ها</CardTitle>
+				<CardDescription>لیست مدل‌ها از OpenRouter گرفته و به‌صورت محلی ذخیره می‌شود تا همیشه در دسترس باشد. هر وقت خواستی به‌روزش کن.</CardDescription>
+			</CardHeader>
+			<CardContent class="space-y-3">
+				<div class="flex flex-wrap items-center gap-3">
+					<Button variant="outline" onclick={doRefreshModels} disabled={refreshingModels || !apiKey}>
+						{refreshingModels ? 'در حال به‌روزرسانی...' : 'به‌روزرسانی لیست مدل‌ها'}
+					</Button>
+					<span class="text-sm text-muted-foreground">
+						{availableModels.length} مدل
+						{#if modelsLastUpdated}
+							• آخرین به‌روزرسانی: {new Date(modelsLastUpdated).toLocaleString('fa-IR')}
+						{:else}
+							• هنوز از سرور به‌روز نشده (لیست پیش‌فرض)
+						{/if}
+					</span>
+				</div>
+				{#if refreshModelsMsg}
+					<p class="text-sm {refreshModelsMsg.includes('به‌روزرسانی شد') ? 'text-green-600' : 'text-amber-600'}">{refreshModelsMsg}</p>
+				{/if}
+				{#if !apiKey}
+					<p class="text-xs text-muted-foreground">برای به‌روزرسانی لیست، ابتدا API Key را وارد و ذخیره کنید.</p>
+				{/if}
+			</CardContent>
+		</Card>
+
+		<!-- Default models per purpose -->
+		<Card>
+			<CardHeader>
+				<CardTitle>مدل‌های پیش‌فرض</CardTitle>
+				<CardDescription>مدل پیش‌فرض هر بخش. اگر برای پروژه‌ای مدلی انتخاب نشده باشد، از این مقادیر استفاده می‌شود.</CardDescription>
+			</CardHeader>
+			<CardContent class="space-y-4">
+				<Input bind:value={modelSearch} placeholder="جستجوی مدل برای انتخاب..." dir="auto" />
+				<div class="space-y-3">
+					{#each Object.keys(purposeLabels) as purpose (purpose)}
+						<div class="flex items-center gap-3">
+							<span class="text-sm font-medium w-28 shrink-0">{purposeLabels[purpose]}</span>
+							<div class="relative flex-1">
+								<button
+									type="button"
+									onclick={() => openModelPicker = { ...openModelPicker, [purpose]: !openModelPicker[purpose] }}
+									class="w-full h-9 text-sm px-3 rounded-md border border-input bg-background text-right truncate hover:bg-muted transition-colors"
+								>
+									{modelLabelFor(defaultModels[purpose])}
+								</button>
+								{#if openModelPicker[purpose]}
+									<!-- svelte-ignore a11y_no_static_element_interactions -->
+									<div class="absolute right-0 left-0 top-10 z-50 rounded-xl border bg-popover shadow-lg" onmouseleave={() => openModelPicker = { ...openModelPicker, [purpose]: false }}>
+										<div class="max-h-60 overflow-y-auto p-1">
+											{#each filteredModelItems as m (m.id)}
+												<button type="button" onclick={() => pickModel(purpose, m.id)}
+													class="w-full text-right text-xs px-2 py-1.5 rounded-md hover:bg-muted transition-colors flex items-center gap-2 {defaultModels[purpose] === m.id ? 'bg-primary/10 font-medium' : ''}">
+													<span class="text-muted-foreground text-[10px] shrink-0">{m.provider || ''}</span>
+													<span class="truncate flex-1">{m.name}</span>
+												</button>
+											{/each}
+											{#if filteredModelItems.length === 0}<p class="text-xs text-muted-foreground text-center py-3">مدلی پیدا نشد</p>{/if}
+										</div>
+									</div>
+								{/if}
+							</div>
+						</div>
+					{/each}
+				</div>
+				<div class="flex items-center gap-3 pt-2 border-t">
+					<Button onclick={saveDefaultModels} disabled={savingDefaults}>
+						{savingDefaults ? 'در حال ذخیره...' : 'ذخیره مدل‌های پیش‌فرض'}
+					</Button>
+					{#if defaultsSaved}<span class="text-sm text-green-600">✓ ذخیره شد</span>{/if}
+				</div>
 			</CardContent>
 		</Card>
 

@@ -13,7 +13,7 @@
 	import { Label } from '$lib/components/ui-rtl/label';
 	import { Textarea } from '$lib/components/ui-rtl/textarea';
 	import * as Select from '$lib/components/ui-rtl/select';
-	import { allModels as fallbackModels, getModelName } from '$lib/models.js';
+	import { allModels as fallbackModels, getModelName, resolveDefaultModel, DEFAULT_MODELS } from '$lib/models.js';
 	import { fetchModels } from '$lib/stores/models.store.js';
 
 	let projectId = $derived($page.params.id);
@@ -46,7 +46,7 @@
 	let availableModels = $state(fallbackModels);
 	let loadingModels = $state(false);
 	let judgeSearchQuery = $state('');
-	let judgeModel = $state('google/gemini-3.1-pro-preview');
+	let judgeModel = $state(DEFAULT_MODELS.scoring);
 	let judging = $state(false);
 	let showJudgePrompt = $state(false);
 	let judgePrompt = $state(`You are an expert translation evaluator. Compare the following translations and provide a detailed analysis.
@@ -131,6 +131,7 @@ Respond in JSON format:
 			}
 		}
 		settings = await settingsStore.load();
+		judgeModel = resolveDefaultModel(settings, 'scoring');
 
 		// Fetch models from OpenRouter API
 		if (settings?.openRouterApiKey) {
