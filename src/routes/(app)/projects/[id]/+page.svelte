@@ -14,6 +14,7 @@
   import FileTypeIcon from '$lib/components/tarjomai/file-type-icon.svelte';
   import ReviewPanel from '$lib/components/tarjomai/review-panel.svelte';
   import { usageService } from '$lib/services/usage.service.js';
+  import { buildGlossaryPromptSection } from '$lib/utils/glossary.utils.js';
 
   let projectId = $derived(parseInt($page.params.id || '0', 10) || 0);
   /** @type {any} */
@@ -166,6 +167,9 @@
   );
 
   const outOfSyncBlocks = $derived(blocks.filter(b => b.outOfSync));
+
+  // Glossary section injected into every translation prompt (empty when no glossary)
+  const glossarySection = $derived(buildGlossaryPromptSection(config?.glossary || []));
 
   const stats = $derived.by(() => {
     const total = blocks.length;
@@ -616,7 +620,7 @@ Strict rules:
 - Keep terminology and tone consistent across the whole paragraph.
 - Output ONLY a valid JSON object mapping each sentence number (as a string) to its translation.
 - No explanations, no notes, no markdown, no code fences.
-- Example: {"1": "ترجمه جمله اول", "2": "ترجمه جمله دوم"}${rules ? `\n${rules}` : ''}`;
+- Example: {"1": "ترجمه جمله اول", "2": "ترجمه جمله دوم"}${rules ? `\n${rules}` : ''}${glossarySection ? `\n\n${glossarySection}` : ''}`;
 
     const numbered = sources.map((s, i) => `[${i + 1}] ${s}`).join('\n');
     const user = `Full paragraph (context only — do NOT translate as a whole):
@@ -676,7 +680,7 @@ ${numbered}`;
 Rules:
 - Output ONLY the translated text. No explanations, no notes, no prefixes.
 - Preserve the sentence structure and meaning.
-- Do not add any extra sentences or commentary.${rules ? `\n${rules}` : ''}`;
+- Do not add any extra sentences or commentary.${rules ? `\n${rules}` : ''}${glossarySection ? `\n\n${glossarySection}` : ''}`;
     return {
       system,
       user: sourceText
@@ -717,7 +721,7 @@ Rules:
         const srcLang = project?.sourceLanguage || 'English';
         const tgtLang = project?.targetLanguage || 'Persian';
         const langLine = `زبان مبدأ: ${srcLang} | زبان مقصد (خروجی): ${tgtLang}`;
-        const systemMsg = `${langLine}\n\n${mainPrompt}\n\n${baseRules}`;
+        const systemMsg = `${langLine}\n\n${mainPrompt}\n\n${baseRules}${glossarySection ? `\n\n${glossarySection}` : ''}`;
         const userContent = buildParagraphUserMessage(block.content, layer1);
 
         try {
@@ -996,7 +1000,15 @@ Rules:
         <button onclick={skipSetup} class="text-xs text-muted-foreground hover:text-foreground">رد شدن</button>
       {/if}
       <div class="flex-1"></div>
-      
+
+      <!-- Glossary link -->
+      <a href="/projects/{projectId}/glossary"
+        class="inline-flex items-center gap-1 h-8 px-2.5 rounded-md border border-input bg-background text-xs hover:bg-muted transition-colors {(config?.glossary?.length) ? 'text-primary border-primary/30' : 'text-muted-foreground'}"
+        title="واژه‌نامه">
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+        واژه‌نامه{#if config?.glossary?.length} <span class="text-[10px] opacity-80">({config.glossary.length})</span>{/if}
+      </a>
+
       <!-- Model selector -->
       <div class="relative">
         <button onclick={() => { showModelDropdown = !showModelDropdown; modelSearch = ''; }}

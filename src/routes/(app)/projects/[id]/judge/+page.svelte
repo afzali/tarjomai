@@ -329,8 +329,8 @@ Respond in JSON format:
 		// Mark setup as completed
 		await projectsService.updateSetupStep(parseInt(projectId), 'completed');
 		
-		// Go to workspace
-		goto(`/projects/${projectId}`);
+		// Go to optional glossary step, then workspace
+		goto(`/projects/${projectId}/glossary?wizard=1`);
 	}
 
 	function handleBack() {

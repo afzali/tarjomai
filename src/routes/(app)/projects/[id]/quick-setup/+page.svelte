@@ -89,7 +89,7 @@
 		});
 
 		await projectsService.updateSetupStep(parseInt(projectId), 'completed');
-		goto(`/projects/${projectId}`);
+		goto(`/projects/${projectId}/glossary?wizard=1`);
 	}
 </script>
 

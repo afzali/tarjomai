@@ -25,7 +25,7 @@
 			defaultModel: selectedModel
 		});
 		await projectsService.updateSetupStep(parseInt(projectId), 'completed');
-		goto(`/projects/${projectId}`);
+		goto(`/projects/${projectId}/glossary?wizard=1`);
 	}
 </script>
 
@@ -64,7 +64,7 @@
 			بازگشت به داوری
 		</Button>
 		<Button onclick={saveAndContinue} disabled={saving || !selectedModel}>
-			{saving ? 'در حال ذخیره...' : 'ذخیره و رفتن به Workspace'}
+			{saving ? 'در حال ذخیره...' : 'ذخیره و ادامه به واژه‌نامه'}
 		</Button>
 	</div>
 </div>

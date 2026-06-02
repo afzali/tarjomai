@@ -7,10 +7,12 @@ export const translationWizard = {
   guided: [
     { id: 'analyze', label: 'تحلیل سبک', icon: 'sparkles', description: 'تحلیل سبک نوشتاری متن مبدا' },
     { id: 'compare', label: 'مقایسه مدل‌ها', icon: 'git-compare', description: 'مقایسه نتایج مدل‌های مختلف' },
-    { id: 'select-model', label: 'انتخاب مدل', icon: 'cpu', description: 'انتخاب مدل نهایی برای ترجمه' }
+    { id: 'select-model', label: 'انتخاب مدل', icon: 'cpu', description: 'انتخاب مدل نهایی برای ترجمه' },
+    { id: 'glossary', label: 'واژه‌نامه', icon: 'book-open', description: 'استخراج اصطلاحات کلیدی (اختیاری)' }
   ],
   quick: [
-    { id: 'quick-setup', label: 'راه‌اندازی سریع', icon: 'zap', description: 'تنظیم سریع مدل و قوانین ترجمه' }
+    { id: 'quick-setup', label: 'راه‌اندازی سریع', icon: 'zap', description: 'تنظیم سریع مدل و قوانین ترجمه' },
+    { id: 'glossary', label: 'واژه‌نامه', icon: 'book-open', description: 'استخراج اصطلاحات کلیدی (اختیاری)' }
   ]
 };
 

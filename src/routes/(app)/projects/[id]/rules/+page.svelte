@@ -15,11 +15,12 @@
 	import { fetchModels } from '$lib/stores/models.store.js';
 	import { settingsStore } from '$lib/stores/settings.store.js';
 	import { toneOptions, vocabularyOptions, translationTypeOptions, fidelityOptions, getOptionLabel } from '$lib/translationOptions.js';
+	import GlossaryManager from '$lib/components/tarjomai/glossary-manager.svelte';
 
 	let projectId = $derived($page.params.id);
-	let project = $state(null);
-	let rules = $state(null);
-	let presets = $state([]);
+	let project = $state(/** @type {any} */ (null));
+	let rules = $state(/** @type {any} */ (null));
+	let presets = $state(/** @type {any[]} */ ([]));
 	let saving = $state(false);
 	let selectedModel = $state('');
 	let settings = $state(null);
@@ -50,6 +51,18 @@
 	let customRules = $state('');
 	let systemPrompt = $state('');
 
+	// Glossary (optional)
+	let glossaryEntries = $state(/** @type {{source:string,target:string,note:string}[]} */ ([]));
+	let glossaryPrompt = $state('');
+	let glossaryModel = $state('');
+	let showGlossary = $state(false);
+
+	function onGlossaryChange(/** @type {{entries:any[],prompt:string,model:string}} */ data) {
+		glossaryEntries = data.entries;
+		glossaryPrompt = data.prompt;
+		glossaryModel = data.model;
+	}
+
 	function toggleTone(value) {
 		if (tone.includes(value)) {
 			if (tone.length > 1) tone = tone.filter(t => t !== value);
@@ -74,6 +87,10 @@
 				fidelity = rules.fidelity || 'medium';
 				customRules = rules.customRules?.join('\n') || '';
 				systemPrompt = rules.systemPrompt || '';
+				if (Array.isArray(rules.glossary)) glossaryEntries = rules.glossary.map((/** @type {any} */ e) => ({ ...e }));
+				if (rules.glossaryPrompt) glossaryPrompt = rules.glossaryPrompt;
+				if (rules.glossaryModel) glossaryModel = rules.glossaryModel;
+				if (glossaryEntries.length > 0) showGlossary = true;
 			}
 			selectedModel = data.project?.defaultModel || 'anthropic/claude-sonnet-4';
 		}
@@ -101,7 +118,10 @@
 			translationType,
 			fidelity,
 			customRules: customRules.split('\n').filter(r => r.trim()),
-			systemPrompt
+			systemPrompt,
+			glossary: glossaryEntries.map(e => ({ ...e })),
+			glossaryPrompt,
+			glossaryModel
 		});
 		// Save selected model to project
 		if (selectedModel && project) {
@@ -295,6 +315,37 @@
 				<Textarea bind:value={systemPrompt} rows={4} placeholder="دستورالعمل‌های اضافی برای مدل..." />
 			</div>
 		</CardContent>
+	</Card>
+
+	<!-- Glossary (optional) -->
+	<Card class="mb-6">
+		<CardHeader>
+			<button type="button" class="flex items-center justify-between w-full text-right" onclick={() => showGlossary = !showGlossary}>
+				<div>
+					<CardTitle>📖 واژه‌نامه <span class="text-sm font-normal text-muted-foreground">(اختیاری)</span></CardTitle>
+					<p class="text-xs text-muted-foreground mt-1">استخراج اصطلاحات کلیدی و معادل‌های یکدست — در هر ترجمه برای مدل ارسال می‌شود</p>
+				</div>
+				<div class="flex items-center gap-2 shrink-0">
+					{#if glossaryEntries.length > 0}
+						<span class="text-[11px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary">{glossaryEntries.length} واژه</span>
+					{/if}
+					<svg class="w-4 h-4 text-muted-foreground transition-transform {showGlossary ? 'rotate-90' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+				</div>
+			</button>
+		</CardHeader>
+		{#if showGlossary}
+			<CardContent>
+				<GlossaryManager
+					bind:entries={glossaryEntries}
+					bind:prompt={glossaryPrompt}
+					bind:model={glossaryModel}
+					sourceLanguage={project?.sourceLanguage || 'en'}
+					targetLanguage={project?.targetLanguage || 'fa'}
+					onChange={onGlossaryChange}
+				/>
+				<p class="text-xs text-muted-foreground mt-3">برای ذخیره‌ی واژه‌نامه، دکمه‌ی «ذخیره قوانین» پایین صفحه را بزنید.</p>
+			</CardContent>
+		{/if}
 	</Card>
 
 	<div class="flex flex-wrap gap-2">
