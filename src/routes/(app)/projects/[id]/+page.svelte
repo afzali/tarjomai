@@ -92,6 +92,10 @@
   let modelSearch = $state('');
   let showModelDropdown = $state(false);
 
+  // Temperature (creativity) for comparative translation — 0 = most faithful/deterministic
+  let translationTemperature = $state(0.4);
+  let showTempPopup = $state(false);
+
   // Show/hide diff highlights
   let showDiff = $state(true);
 
@@ -123,7 +127,7 @@
   const defaultParagraphUserTemplate = `{{#if translation}}متن اصلی:
 {{original}}
 
-ترجمه فعلی (لایه اول):
+ترجمه فعلی (تطبیقی):
 {{translation}}{{else}}متن اصلی:
 {{original}}{{/if}}`;
   let paragraphSystemPrompt = $state('');
@@ -132,6 +136,8 @@
   let paragraphModel = $state('');
   let paragraphModelSearch = $state('');
   let showParagraphModelDropdown = $state(false);
+  // Temperature (creativity) for fluent translation — usually a bit higher for natural phrasing
+  let paragraphTemperature = $state(0.4);
   // Persisted paragraph config per project
   let paragraphConfigSaved = $state(false);
 
@@ -224,6 +230,12 @@
     }
     if (project.paragraphModel) {
       paragraphModel = project.paragraphModel;
+    }
+    if (typeof project.translationTemperature === 'number') {
+      translationTemperature = project.translationTemperature;
+    }
+    if (typeof project.paragraphTemperature === 'number') {
+      paragraphTemperature = project.paragraphTemperature;
     }
 
     if (chapters.length > 0) selectChapter(chapters[0]);
@@ -468,6 +480,15 @@
   }
 
   /**
+   * Comparative (aligned) translation.
+   * For each block we send the WHOLE paragraph as context plus a numbered list of
+   * its sentences, and ask the model to return a JSON object keyed by sentence
+   * number. This keeps the 1:1 source↔target alignment (so sentences can be
+   * compared side by side) while giving the model full paragraph context — which
+   * dramatically improves quality and lowers cost vs. one request per sentence.
+   *
+   * Any sentence the model fails to return is retried individually so that no
+   * sentence is ever left untranslated.
    * @param {Block[]} targetBlocks
    */
   async function runTranslation(targetBlocks) {
@@ -475,7 +496,7 @@
     abortController = new AbortController();
     const signal = abortController.signal;
 
-    // Count total sentences
+    // Count total sentences (pending only)
     const allSentences = targetBlocks.flatMap(b =>
       (b.sentences || makeSentences(b.content, '')).filter(s => s.source.trim() && s.status !== 'done')
     );
@@ -489,37 +510,72 @@
         if (blockIdx === -1) continue;
 
         const sentences = blocks[blockIdx].sentences || makeSentences(block.content, '');
-        // Update sentences reactively so UI shows block as translating
+
+        // Local indices of sentences that still need a translation
+        /** @type {number[]} */
+        const pendingIdx = [];
+        for (let si = 0; si < sentences.length; si++) {
+          if (sentences[si].source.trim() && sentences[si].status !== 'done') pendingIdx.push(si);
+        }
+        if (pendingIdx.length === 0) continue;
+
+        // Mark all pending sentences in this block as translating
+        for (const si of pendingIdx) sentences[si] = { ...sentences[si], status: 'translating' };
         blocks[blockIdx] = { ...blocks[blockIdx], sentences: [...sentences] };
         blocks = [...blocks];
+        currentSentenceText = block.content.slice(0, 60);
+        await tick();
 
-        for (let si = 0; si < sentences.length; si++) {
-          if (signal.aborted) break;
-          const sent = sentences[si];
-          if (!sent.source.trim()) continue;
+        // --- One batched request for the whole paragraph ---
+        /** @type {Record<number, string> | null} */
+        let parsed = null;
+        const sources = pendingIdx.map(si => sentences[si].source);
+        const prompt = buildBlockTranslationPrompt(block.content, sources);
+        const result = await openrouterService.sendMessage(
+          settings.openRouterApiKey,
+          translationModel,
+          [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }],
+          { signal, projectId, chapterId: selectedChapter?.id, temperature: translationTemperature }
+        );
+        if (signal.aborted) break;
+        if (result.success !== false) {
+          parsed = parseSentenceTranslations(result.content || '', pendingIdx.length);
+        }
 
-          // Mark sentence as translating
-          sentences[si] = { ...sent, status: 'translating' };
-          blocks[blockIdx] = { ...blocks[blockIdx], sentences: [...sentences] };
-          blocks = [...blocks];
-          currentSentenceText = sent.source;
-          await tick();
-
-          try {
-            const prompt = buildTranslationPrompt(sent.source);
-            const result = await openrouterService.sendMessage(
-              settings.openRouterApiKey,
-              translationModel,
-              [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }],
-              { signal, projectId, chapterId: selectedChapter?.id }
-            );
-            sentences[si] = { ...sentences[si], translation: (result.content || '').trim(), status: 'done' };
+        // Apply batch results; collect sentences still missing for individual retry
+        /** @type {number[]} */
+        const missing = [];
+        pendingIdx.forEach((si, local) => {
+          const t = parsed?.[local];
+          if (t && t.trim()) {
+            sentences[si] = { ...sentences[si], translation: t.trim(), status: 'done' };
             doneSentences += 1;
-          } catch (/** @type {any} */ err) {
-            if (err?.name === 'AbortError') break;
-            sentences[si] = { ...sentences[si], status: 'error' };
+          } else {
+            missing.push(si);
           }
+        });
+        blocks[blockIdx] = { ...blocks[blockIdx], sentences: [...sentences] };
+        blocks = [...blocks];
+        await tick();
 
+        // --- Fallback: translate any missing sentence individually (guarantees no sentence is dropped) ---
+        for (const si of missing) {
+          if (signal.aborted) break;
+          currentSentenceText = sentences[si].source;
+          await tick();
+          const fb = buildTranslationPrompt(sentences[si].source);
+          const r = await openrouterService.sendMessage(
+            settings.openRouterApiKey,
+            translationModel,
+            [{ role: 'system', content: fb.system }, { role: 'user', content: fb.user }],
+            { signal, projectId, chapterId: selectedChapter?.id, temperature: translationTemperature }
+          );
+          if (signal.aborted) break;
+          const t = r.success !== false ? (r.content || '').trim() : '';
+          sentences[si] = t
+            ? { ...sentences[si], translation: t, status: 'done' }
+            : { ...sentences[si], status: 'error' };
+          if (t) doneSentences += 1;
           blocks[blockIdx] = { ...blocks[blockIdx], sentences: [...sentences] };
           blocks = [...blocks];
         }
@@ -538,6 +594,78 @@
       blocks = blocks.map(b => saveSnapshot(b));
       await saveBlocks();
     }
+  }
+
+  /**
+   * Build a batched prompt: full paragraph for context + numbered sentences,
+   * asking for a JSON object mapping each sentence number to its translation.
+   * @param {string} paragraph
+   * @param {string[]} sources
+   */
+  function buildBlockTranslationPrompt(paragraph, sources) {
+    const srcLang = project?.sourceLanguage || 'English';
+    const tgtLang = project?.targetLanguage || 'Persian';
+    const rules = config?.systemPrompt || '';
+    const system = `You are a professional translator. Translate from ${srcLang} to ${tgtLang}.
+You receive the full paragraph for CONTEXT, then a numbered list of sentences taken from that paragraph.
+Translate EACH numbered sentence into ${tgtLang}, using the whole paragraph for context (pronouns, terminology, flow).
+
+Strict rules:
+- Translate every numbered sentence. Never skip, merge, split, or reorder sentences.
+- Return EXACTLY one translation per input number.
+- Keep terminology and tone consistent across the whole paragraph.
+- Output ONLY a valid JSON object mapping each sentence number (as a string) to its translation.
+- No explanations, no notes, no markdown, no code fences.
+- Example: {"1": "ترجمه جمله اول", "2": "ترجمه جمله دوم"}${rules ? `\n${rules}` : ''}`;
+
+    const numbered = sources.map((s, i) => `[${i + 1}] ${s}`).join('\n');
+    const user = `Full paragraph (context only — do NOT translate as a whole):
+"""
+${paragraph}
+"""
+
+Sentences to translate (return JSON keyed by these numbers):
+${numbered}`;
+    return { system, user };
+  }
+
+  /**
+   * Parse a model response into a map of local sentence index (0-based) → translation.
+   * Accepts a JSON object keyed by 1-based numbers (e.g. {"1": "..."}) or a JSON array.
+   * Tolerates surrounding text / markdown code fences. Returns null if nothing usable.
+   * @param {string} content
+   * @param {number} count
+   * @returns {Record<number, string> | null}
+   */
+  function parseSentenceTranslations(content, count) {
+    if (!content) return null;
+    let text = content.trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+    // Grab the first {...} or [...] block if there is extra prose around it
+    const match = text.match(/[\[{][\s\S]*[\]}]/);
+    if (match) text = match[0];
+
+    /** @type {any} */
+    let data;
+    try { data = JSON.parse(text); } catch { return null; }
+
+    /** @type {Record<number, string>} */
+    const out = {};
+    if (Array.isArray(data)) {
+      data.forEach((v, i) => { if (i < count && v != null) out[i] = String(v); });
+    } else if (data && typeof data === 'object') {
+      for (const [k, v] of Object.entries(data)) {
+        const n = parseInt(k, 10);
+        if (Number.isNaN(n) || v == null) continue;
+        const local = n - 1; // keys are 1-based
+        if (local >= 0 && local < count) out[local] = String(v);
+      }
+    } else {
+      return null;
+    }
+    return Object.keys(out).length > 0 ? out : null;
   }
 
   function buildTranslationPrompt(/** @type {string} */ sourceText) {
@@ -597,7 +725,7 @@ Rules:
             settings.openRouterApiKey,
             paragraphModel,
             [{ role: 'system', content: systemMsg }, { role: 'user', content: userContent }],
-            { signal, projectId, chapterId: selectedChapter?.id }
+            { signal, projectId, chapterId: selectedChapter?.id, temperature: paragraphTemperature }
           );
           const translated = (result.content || '').trim();
           blocks[blockIdx] = { ...blocks[blockIdx], paragraphTranslation: translated };
@@ -626,7 +754,8 @@ Rules:
       paragraphSystemPrompt: paragraphSystemPrompt,
       paragraphBaseRules: paragraphBaseRules,
       paragraphUserTemplate: paragraphUserTemplate,
-      paragraphModel
+      paragraphModel,
+      paragraphTemperature
     });
     paragraphConfigSaved = true;
     showParagraphSetup = false;
@@ -681,7 +810,7 @@ Rules:
 
   function handleExport(/** @type {string} */ format) {
     if (!project || !chapters.length) return;
-    const layerLabel = exportLayer === 'layer1' ? 'ترجمه جمله‌ای' : exportLayer === 'layer2' ? 'ترجمه پاراگرافی' : 'هر دو لایه';
+    const layerLabel = exportLayer === 'layer1' ? 'ترجمه تطبیقی' : exportLayer === 'layer2' ? 'ترجمه روان' : 'هر دو';
     const opts = { outputLabel: layerLabel, includeSource: exportIncludeSource, layer: exportLayer };
     if (format === 'word') {
       exportUtils.exportToWord(project, chapters, opts);
@@ -699,6 +828,21 @@ Rules:
     showModelDropdown = false;
     await projectsService.updateProject(projectId, { defaultModel: modelId, chatModel: modelId });
     if (project) project = { ...project, defaultModel: modelId, chatModel: modelId };
+  }
+
+  /** Persist the comparative-translation temperature to the project (debounced via blur/commit). */
+  async function saveTranslationTemperature() {
+    await projectsService.updateProject(projectId, { translationTemperature });
+    if (project) project = { ...project, translationTemperature };
+  }
+
+  /** Human-readable creativity label for a temperature value. */
+  function tempLabel(/** @type {number} */ t) {
+    if (t <= 0) return 'دقیق‌ترین (بدون خلاقیت)';
+    if (t < 0.4) return 'کم';
+    if (t < 0.8) return 'متعادل';
+    if (t < 1.2) return 'خلاق';
+    return 'بسیار خلاق';
   }
 
   const translationModelLabel = $derived(
@@ -767,7 +911,7 @@ Rules:
           const result = await openrouterService.sendMessage(
             settings.openRouterApiKey, translationModel,
             [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }],
-            { signal, projectId, chapterId: selectedChapter?.id }
+            { signal, projectId, chapterId: selectedChapter?.id, temperature: translationTemperature }
           );
           sentences[si] = { ...sentences[si], translation: (result.content || '').trim(), status: 'done' };
           doneSentences += 1;
@@ -879,6 +1023,35 @@ Rules:
         {/if}
       </div>
       
+      <!-- Temperature (creativity) control -->
+      <div class="relative">
+        <button onclick={() => showTempPopup = !showTempPopup}
+          class="inline-flex items-center gap-1 h-8 px-2.5 rounded-md border border-input bg-background text-xs hover:bg-muted transition-colors {translationTemperature > 0 ? 'text-primary border-primary/30' : 'text-muted-foreground'}"
+          title="درجه خلاقیت (Temperature)">
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/></svg>
+          {translationTemperature.toFixed(1)}
+        </button>
+        {#if showTempPopup}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="absolute left-0 top-9 z-50 w-64 rounded-xl border bg-popover shadow-lg p-3" onmouseleave={() => { showTempPopup = false; saveTranslationTemperature(); }}>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-xs font-medium">درجه خلاقیت</span>
+              <span class="text-xs text-muted-foreground tabular-nums">{translationTemperature.toFixed(1)}</span>
+            </div>
+            <input type="range" min="0" max="2" step="0.1" bind:value={translationTemperature}
+              onchange={saveTranslationTemperature}
+              class="w-full accent-primary cursor-pointer"/>
+            <div class="flex items-center justify-between text-[10px] text-muted-foreground mt-1">
+              <span>دقیق</span>
+              <span>خلاق</span>
+            </div>
+            <p class="text-[10px] text-muted-foreground mt-2 leading-relaxed">
+              <span class="font-medium text-foreground">{tempLabel(translationTemperature)}</span> — مقدار کمتر یعنی ترجمه وفادارتر و یکدست‌تر؛ مقدار بیشتر یعنی واژه‌گزینی آزادتر و خلاقانه‌تر. برای ترجمه تطبیقی معمولاً ۰ تا ۰٫۳ بهترین است.
+            </p>
+          </div>
+        {/if}
+      </div>
+
       <!-- Export -->
       <button onclick={() => showExportModal = true}
         class="inline-flex items-center gap-1 h-8 px-3 rounded-md border border-input bg-background text-xs hover:bg-muted transition-colors" aria-label="خروجی">
@@ -939,11 +1112,11 @@ Rules:
             <div class="inline-flex items-center rounded-md border border-input bg-background overflow-hidden">
               <button onclick={() => viewLayer = 1}
                 class="h-7 px-2 text-xs transition-colors {viewLayer === 1 ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}">
-                جمله
+                تطبیقی
               </button>
               <button onclick={() => viewLayer = 2}
                 class="h-7 px-2 text-xs transition-colors border-r {viewLayer === 2 ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}">
-                پاراگراف
+                روان
               </button>
             </div>
 
@@ -959,9 +1132,9 @@ Rules:
                   }}
                   disabled={blocks.length === 0 || blocks.every(b => !b.content.trim()) || (translationMode === 'sentence' && !translationModel)}
                   class="inline-flex items-center gap-1.5 h-7 px-3 text-xs bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors rounded-md"
-                  title={translationMode === 'sentence' ? 'ترجمه جمله‌محور (لایه ۱)' : 'ترجمه پاراگراف‌محور (لایه ۲)'}>
+                  title={translationMode === 'sentence' ? 'ترجمه تطبیقی — جمله‌به‌جمله و قابل مقایسه با متن اصلی' : 'ترجمه روان — صیقل نهایی برای متنی یکدست و طبیعی'}>
                   <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
-                  {translationMode === 'sentence' ? 'ترجمه جمله‌ای' : 'ترجمه پاراگرافی'}
+                  {translationMode === 'sentence' ? 'ترجمه تطبیقی' : 'ترجمه روان'}
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
                   <svg class="w-3 h-3 opacity-60 cursor-pointer hover:opacity-100" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"
                     onclick={(e) => { e.stopPropagation(); showTranslateMenu = !showTranslateMenu; }}><path d="m6 9 6 6 6-6"/></svg>
@@ -974,16 +1147,16 @@ Rules:
                     <button onclick={() => { translationMode = 'sentence'; showTranslateMenu = false; }}
                       class="w-full text-right text-xs px-3 py-2 hover:bg-muted transition-colors flex items-center gap-2">
                       <svg class="w-3.5 h-3.5 shrink-0 {translationMode === 'sentence' ? 'text-primary' : 'text-transparent'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
-                      <span class="flex-1">ترجمه جمله‌ای</span>
-                      <span class="text-[10px] text-muted-foreground">لایه ۱</span>
+                      <span class="flex-1">ترجمه تطبیقی</span>
+                      <span class="text-[10px] text-muted-foreground">جمله‌به‌جمله</span>
                     </button>
                     <!-- Paragraph mode -->
                     <div class="flex items-center hover:bg-muted transition-colors">
                       <button onclick={() => { translationMode = 'paragraph'; showTranslateMenu = false; }}
                         class="flex-1 text-right text-xs px-3 py-2 flex items-center gap-2">
                         <svg class="w-3.5 h-3.5 shrink-0 {translationMode === 'paragraph' ? 'text-primary' : 'text-transparent'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
-                        <span class="flex-1">ترجمه پاراگرافی</span>
-                        <span class="text-[10px] text-muted-foreground">لایه ۲</span>
+                        <span class="flex-1">ترجمه روان</span>
+                        <span class="text-[10px] text-muted-foreground">صیقل نهایی</span>
                       </button>
                       <button onclick={() => { showParagraphSetup = true; showTranslateMenu = false; }}
                         class="p-2 text-muted-foreground hover:text-foreground transition-colors shrink-0" title="تنظیمات پرامپت و مدل">
@@ -1001,8 +1174,7 @@ Rules:
             <div class="px-4 py-2 border-b bg-muted/20 shrink-0">
               <div class="flex items-center justify-between text-xs text-muted-foreground mb-1">
                 <span class="truncate max-w-xs" title={currentSentenceText}>
-                  {doneSentences}/{totalSentences} {translationMode === 'paragraph' ? 'پاراگراف' : 'جمله'}
-                  {#if currentSentenceText} — <span class="italic opacity-70 truncate">{currentSentenceText.slice(0, 40)}{currentSentenceText.length > 40 ? '…' : ''}</span>{/if}
+                  {doneSentences}/{totalSentences} {translationMode === 'paragraph' ? 'پاراگراف' : 'جمله'}                  {#if currentSentenceText} — <span class="italic opacity-70 truncate">{currentSentenceText.slice(0, 40)}{currentSentenceText.length > 40 ? '…' : ''}</span>{/if}
                 </span>
                 <span class="shrink-0">{translationProgressPercent}٪</span>
               </div>
@@ -1081,7 +1253,7 @@ Rules:
               <div class="px-3 py-1.5 border-b bg-muted/30 sticky top-0 z-10 shrink-0 flex items-center gap-2">
                 <span class="text-xs font-medium text-muted-foreground">ترجمه ({project?.targetLanguage || '...'})</span>
                 <span class="text-[10px] px-1.5 py-0.5 rounded-full {viewLayer === 1 ? 'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300' : 'bg-violet-100 dark:bg-violet-950 text-violet-700 dark:text-violet-300'}">
-                  {viewLayer === 1 ? 'لایه جمله' : 'لایه پاراگراف'}
+                  {viewLayer === 1 ? 'تطبیقی' : 'روان'}
                 </span>
               </div>
               <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1111,19 +1283,19 @@ Rules:
                     onmouseenter={() => hoveredBlockId = block.id}
                     onmouseleave={() => { hoveredBlockId = ''; hoveredSentenceIndex = -1; }}
                   >
-                    <!-- Layer 2: Paragraph translation view -->
+                    <!-- Layer 2: Fluent (polished) translation view -->
                     {#if viewLayer === 2}
                       {#if block.paragraphTranslation}
                         <p class="text-sm leading-relaxed whitespace-pre-wrap" dir="auto">{block.paragraphTranslation}</p>
                       {:else if block.content?.trim()}
                         <p class="text-xs text-muted-foreground italic flex items-center gap-1">
                           <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
-                          ترجمه پاراگرافی ندارد
+                          ترجمه روان ندارد
                         </p>
                       {:else}
                         <p class="text-xs text-muted-foreground italic">—</p>
                       {/if}
-                    <!-- Layer 1: Sentence translation view (existing) -->
+                    <!-- Layer 1: Comparative (aligned) translation view -->
                     {:else}
                     <!-- Error badge -->
                     {#if errorCount > 0 && !translating}
@@ -1467,9 +1639,9 @@ Rules:
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="bg-card border rounded-xl p-6 w-full max-w-lg mx-4 shadow-xl max-h-[90vh] overflow-y-auto" onclick={(e) => e.stopPropagation()}>
-      <h3 class="text-lg font-semibold mb-1" dir="rtl">تنظیمات ترجمه پاراگرافی</h3>
+      <h3 class="text-lg font-semibold mb-1" dir="rtl">تنظیمات ترجمه روان</h3>
       <p class="text-xs text-muted-foreground mb-4" dir="rtl">
-        هر پاراگراف همراه ترجمه لایه اول (در صورت وجود) طبق قالب زیر به مدل ارسال می‌شود. نتیجه در لایه دوم ذخیره می‌شود.
+        هر پاراگراف همراه ترجمه تطبیقی (در صورت وجود) طبق قالب زیر به مدل ارسال می‌شود. نتیجه به‌عنوان ترجمه روان ذخیره می‌شود.
       </p>
       <div class="space-y-4" dir="rtl">
         <!-- Model selection -->
@@ -1500,6 +1672,23 @@ Rules:
               </div>
             {/if}
           </div>
+        </div>
+
+        <!-- Temperature (creativity) -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-medium">درجه خلاقیت (Temperature)</span>
+            <span class="text-xs text-muted-foreground tabular-nums">{paragraphTemperature.toFixed(1)} — {tempLabel(paragraphTemperature)}</span>
+          </div>
+          <input type="range" min="0" max="2" step="0.1" bind:value={paragraphTemperature}
+            class="w-full accent-primary cursor-pointer"/>
+          <div class="flex items-center justify-between text-[10px] text-muted-foreground">
+            <span>دقیق و وفادار</span>
+            <span>آزاد و خلاق</span>
+          </div>
+          <p class="text-[10px] text-muted-foreground">
+            مقدار بیشتر، خروجی روان‌تر و آزادتر می‌دهد. برای ترجمه روان معمولاً ۰٫۳ تا ۰٫۷ مناسب است.
+          </p>
         </div>
 
         <!-- System prompt -->
@@ -1543,7 +1732,7 @@ Rules:
             <p>از متغیرهای زیر در قالب استفاده کنید:</p>
             <div class="flex flex-wrap gap-x-3 gap-y-0.5">
               <span><code class="px-1 py-0.5 rounded bg-muted text-[10px]">{'{{original}}'}</code> متن اصلی پاراگراف</span>
-              <span><code class="px-1 py-0.5 rounded bg-muted text-[10px]">{'{{translation}}'}</code> ترجمه لایه اول</span>
+              <span><code class="px-1 py-0.5 rounded bg-muted text-[10px]">{'{{translation}}'}</code> ترجمه تطبیقی</span>
             </div>
             <p class="mt-1">برای شرطی کردن (اگر ترجمه وجود داشت/نداشت):</p>
             <code class="block px-2 py-1 rounded bg-muted text-[10px] whitespace-pre-wrap leading-relaxed">{'{{#if translation}}...{{else}}...{{/if}}'}</code>
@@ -1558,7 +1747,7 @@ Rules:
           title="ذخیره بدون شروع ترجمه">ذخیره</button>
         <button onclick={startParagraphTranslation} disabled={!paragraphModel}
           class="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-40 transition-colors">
-          شروع ترجمه پاراگرافی
+          شروع ترجمه روان
         </button>
       </div>
     </div>
@@ -1573,9 +1762,9 @@ Rules:
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="bg-card border rounded-xl p-5 w-full max-w-sm mx-4 shadow-xl" onclick={(e) => e.stopPropagation()}>
-      <h3 class="text-base font-semibold mb-2" dir="rtl">شروع ترجمه جمله‌ای؟</h3>
+      <h3 class="text-base font-semibold mb-2" dir="rtl">شروع ترجمه تطبیقی؟</h3>
       <p class="text-sm text-muted-foreground mb-4" dir="rtl">
-        ترجمه لایه اول (جمله‌ای) روی تمام بندهای این فصل اجرا خواهد شد.
+        ترجمه تطبیقی (جمله‌به‌جمله و قابل مقایسه با متن اصلی) روی تمام بندهای این فصل اجرا خواهد شد.
       </p>
       <div class="flex gap-2 justify-end" dir="rtl">
         <button onclick={() => showTranslateConfirm = false} class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">انصراف</button>
@@ -1596,9 +1785,9 @@ Rules:
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="bg-card border rounded-xl p-5 w-full max-w-sm mx-4 shadow-xl" onclick={(e) => e.stopPropagation()}>
-      <h3 class="text-base font-semibold mb-2" dir="rtl">شروع ترجمه پاراگرافی؟</h3>
+      <h3 class="text-base font-semibold mb-2" dir="rtl">شروع ترجمه روان؟</h3>
       <p class="text-sm text-muted-foreground mb-1" dir="rtl">
-        ترجمه لایه دوم (پاراگرافی) روی تمام بندهای این فصل اجرا خواهد شد.
+        ترجمه روان (صیقل نهایی برای متنی یکدست و طبیعی) روی تمام بندهای این فصل اجرا خواهد شد.
       </p>
       <p class="text-xs text-muted-foreground mb-4" dir="rtl">
         مدل: <span class="font-medium text-foreground">{paragraphModelLabel}</span>
@@ -1627,30 +1816,30 @@ Rules:
 
         <!-- Layer selection -->
         <div class="space-y-2">
-          <span class="text-sm font-medium block">لایه ترجمه</span>
+          <span class="text-sm font-medium block">نوع ترجمه</span>
           <div class="space-y-1.5">
             <button onclick={() => exportLayer = 'layer1'}
               class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-sm transition-colors {exportLayer === 'layer1' ? 'border-primary bg-primary/5 text-primary' : 'border-input hover:bg-muted'}">
               <svg class="w-4 h-4 shrink-0 {exportLayer === 'layer1' ? 'text-primary' : 'text-transparent'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>
               <div class="flex-1 text-right">
-                <div class="font-medium">ترجمه جمله‌ای (لایه ۱)</div>
-                <div class="text-xs text-muted-foreground">ترجمه پیش‌فرض جمله به جمله</div>
+                <div class="font-medium">ترجمه تطبیقی</div>
+                <div class="text-xs text-muted-foreground">ترجمه جمله‌به‌جمله و قابل مقایسه با متن اصلی</div>
               </div>
             </button>
             <button onclick={() => exportLayer = 'layer2'}
               class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-sm transition-colors {exportLayer === 'layer2' ? 'border-primary bg-primary/5 text-primary' : 'border-input hover:bg-muted'}">
               <svg class="w-4 h-4 shrink-0 {exportLayer === 'layer2' ? 'text-primary' : 'text-transparent'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>
               <div class="flex-1 text-right">
-                <div class="font-medium">ترجمه پاراگرافی (لایه ۲)</div>
-                <div class="text-xs text-muted-foreground">نسخه بازآفرینی‌شده با مدل سفارشی</div>
+                <div class="font-medium">ترجمه روان</div>
+                <div class="text-xs text-muted-foreground">نسخه صیقل‌خورده و یکدست با مدل سفارشی</div>
               </div>
             </button>
             <button onclick={() => exportLayer = 'both'}
               class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-sm transition-colors {exportLayer === 'both' ? 'border-primary bg-primary/5 text-primary' : 'border-input hover:bg-muted'}">
               <svg class="w-4 h-4 shrink-0 {exportLayer === 'both' ? 'text-primary' : 'text-transparent'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>
               <div class="flex-1 text-right">
-                <div class="font-medium">هر دو لایه</div>
-                <div class="text-xs text-muted-foreground">لایه ۲ به عنوان اصلی + لایه ۱ در زیر هر بند</div>
+                <div class="font-medium">هر دو</div>
+                <div class="text-xs text-muted-foreground">ترجمه روان به عنوان اصلی + ترجمه تطبیقی زیر هر بند</div>
               </div>
             </button>
           </div>
