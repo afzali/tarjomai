@@ -920,9 +920,13 @@ Rules:
   let importProgress = $state(0);
   let importError = $state('');
 
-  // TOC choice dialog: shown when the document has its own heading structure
+  // Import options dialog (TOC mode + footnotes)
   let showImportChoice = $state(false);
   let importHeadingCount = $state(0);
+  let importHasHeadings = $state(false);
+  let importIncludeFootnotes = $state(true);
+  /** @type {'headings'|'chunks'} */
+  let importMode = $state('headings');
   /** @type {File | null} */
   let pendingWordFile = $state(null);
 
@@ -945,15 +949,14 @@ Rules:
       const { hasHeadings, headingCount } = await analyzeDocx(file, (p) => { importProgress = p; });
       importingWord = false;
 
-      if (hasHeadings) {
-        // Let the user decide: follow the document's own outline, or auto-chunk
-        pendingWordFile = file;
-        importHeadingCount = headingCount;
-        showImportChoice = true;
-      } else {
-        // No outline in the document → split into fixed-size sections automatically
-        await runWordImport(file, 'chunks');
-      }
+      // Always show the options dialog so the user can choose footnote handling
+      // (and, when the document has an outline, how chapters are built).
+      pendingWordFile = file;
+      importHasHeadings = hasHeadings;
+      importHeadingCount = headingCount;
+      importMode = hasHeadings ? 'headings' : 'chunks';
+      importIncludeFootnotes = true;
+      showImportChoice = true;
     } catch (/** @type {any} */ err) {
       console.error(err);
       importError = err?.message || 'خطا در پردازش فایل Word';
@@ -961,18 +964,18 @@ Rules:
     }
   }
 
-  /**
-   * @param {File} file
-   * @param {'headings'|'chunks'} mode
-   */
-  async function runWordImport(file, mode) {
+  async function confirmWordImport() {
+    if (!pendingWordFile) return;
+    const file = pendingWordFile;
+    const mode = importMode;
+    const includeFootnotes = importIncludeFootnotes;
+    showImportChoice = false;
     importingWord = true;
     importProgress = 0;
     importError = '';
-    showImportChoice = false;
     try {
       const { extractChaptersFromDocx } = await import('$lib/utils/docx-chapters.js');
-      const parsed = await extractChaptersFromDocx(file, (p) => { importProgress = p; }, { mode });
+      const parsed = await extractChaptersFromDocx(file, (p) => { importProgress = p; }, { mode, includeFootnotes });
       if (!parsed.length) {
         importError = 'هیچ محتوایی در فایل پیدا نشد';
         return;
@@ -2001,39 +2004,62 @@ Rules:
   </div>
 {/if}
 
-<!-- Word Import: TOC choice -->
+<!-- Word Import: options (chapter mode + footnotes) -->
 {#if showImportChoice}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={() => { showImportChoice = false; pendingWordFile = null; }}>
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="bg-card border rounded-xl p-6 w-full max-w-md mx-4 shadow-xl" onclick={(e) => e.stopPropagation()} dir="rtl">
-      <h3 class="text-lg font-semibold mb-1">فهرست فصل‌ها</h3>
-      <p class="text-xs text-muted-foreground mb-4">
-        این سند Word دارای ساختار عنوان‌بندی (فهرست) با {importHeadingCount} عنوان است. می‌خواهی فصل‌ها چطور ساخته شوند؟
-      </p>
-      <div class="space-y-2">
-        <button onclick={() => pendingWordFile && runWordImport(pendingWordFile, 'headings')}
-          class="w-full text-right px-3 py-3 rounded-lg border border-primary bg-primary/5 hover:bg-primary/10 transition-colors">
-          <div class="font-medium text-sm flex items-center gap-2">
-            <svg class="w-4 h-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
-            استفاده از فهرست خود سند
+    <div class="bg-card border rounded-xl p-6 w-full max-w-md mx-4 shadow-xl max-h-[90vh] overflow-y-auto" onclick={(e) => e.stopPropagation()} dir="rtl">
+      <h3 class="text-lg font-semibold mb-4">تنظیمات ایمپورت از Word</h3>
+
+      <!-- Chapter building mode -->
+      {#if importHasHeadings}
+        <div class="mb-4">
+          <p class="text-sm font-medium mb-1">ساخت فصل‌ها</p>
+          <p class="text-xs text-muted-foreground mb-2">این سند دارای فهرست/عنوان‌بندی با {importHeadingCount} عنوان است.</p>
+          <div class="space-y-2">
+            <button onclick={() => importMode = 'headings'}
+              class="w-full text-right px-3 py-2.5 rounded-lg border text-sm transition-colors {importMode === 'headings' ? 'border-primary bg-primary/5' : 'border-input hover:bg-muted'}">
+              <div class="font-medium flex items-center gap-2">
+                <span class="w-4 h-4 rounded-full border flex items-center justify-center shrink-0 {importMode === 'headings' ? 'border-primary' : 'border-muted-foreground/40'}">{#if importMode === 'headings'}<span class="w-2 h-2 rounded-full bg-primary"></span>{/if}</span>
+                استفاده از فهرست خود سند
+              </div>
+              <div class="text-xs text-muted-foreground mt-1 pr-6">هر عنوان سند یک فصل می‌شود (پیشنهادی)</div>
+            </button>
+            <button onclick={() => importMode = 'chunks'}
+              class="w-full text-right px-3 py-2.5 rounded-lg border text-sm transition-colors {importMode === 'chunks' ? 'border-primary bg-primary/5' : 'border-input hover:bg-muted'}">
+              <div class="font-medium flex items-center gap-2">
+                <span class="w-4 h-4 rounded-full border flex items-center justify-center shrink-0 {importMode === 'chunks' ? 'border-primary' : 'border-muted-foreground/40'}">{#if importMode === 'chunks'}<span class="w-2 h-2 rounded-full bg-primary"></span>{/if}</span>
+                تقسیم خودکار به بخش‌های مساوی
+              </div>
+              <div class="text-xs text-muted-foreground mt-1 pr-6">نادیده‌گرفتن عنوان‌ها و تقسیم متن به بخش‌های هم‌اندازه</div>
+            </button>
           </div>
-          <div class="text-xs text-muted-foreground mt-1 pr-6">هر عنوان سند یک فصل می‌شود (پیشنهادی)</div>
-        </button>
-        <button onclick={() => pendingWordFile && runWordImport(pendingWordFile, 'chunks')}
-          class="w-full text-right px-3 py-3 rounded-lg border border-input hover:bg-muted transition-colors">
-          <div class="font-medium text-sm flex items-center gap-2">
-            <svg class="w-4 h-4 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 3h7v7H3z"/><path d="M14 3h7v7h-7z"/><path d="M14 14h7v7h-7z"/><path d="M3 14h7v7H3z"/></svg>
-            تقسیم خودکار به بخش‌های مساوی
-          </div>
-          <div class="text-xs text-muted-foreground mt-1 pr-6">نادیده‌گرفتن عنوان‌ها و تقسیم متن به بخش‌های هم‌اندازه</div>
+        </div>
+      {:else}
+        <p class="text-xs text-muted-foreground mb-4">این سند فهرست/عنوان‌بندی ندارد؛ متن به بخش‌های مساوی تقسیم می‌شود.</p>
+      {/if}
+
+      <!-- Footnotes toggle -->
+      <div class="flex items-center justify-between py-3 border-t">
+        <div class="min-w-0 pl-3">
+          <p class="text-sm font-medium">پاورقی‌ها و یادداشت‌های پایانی</p>
+          <p class="text-xs text-muted-foreground mt-0.5">اگر روشن باشد، متن پاورقی‌ها (footnote/endnote) هم وارد و ترجمه می‌شود</p>
+        </div>
+        <button onclick={() => importIncludeFootnotes = !importIncludeFootnotes}
+          role="switch" aria-checked={importIncludeFootnotes} aria-label="شامل پاورقی‌ها" dir="ltr"
+          class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors {importIncludeFootnotes ? 'bg-primary' : 'bg-muted-foreground/30'}">
+          <span class="inline-block h-4 w-4 rounded-full bg-white shadow transition-transform {importIncludeFootnotes ? 'translate-x-4' : 'translate-x-0.5'}"></span>
         </button>
       </div>
-      <div class="flex justify-end mt-4">
+
+      <div class="flex gap-2 justify-end mt-4">
         <button onclick={() => { showImportChoice = false; pendingWordFile = null; }}
           class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">انصراف</button>
+        <button onclick={confirmWordImport}
+          class="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 transition-colors">شروع ایمپورت</button>
       </div>
     </div>
   </div>

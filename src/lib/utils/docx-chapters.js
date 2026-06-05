@@ -107,16 +107,24 @@ export function groupByParagraphChunks(items, paragraphsPerChapter = 20) {
  *
  * @param {File} file
  * @param {(progress: number) => void} [onProgress]  0..100
+ * @param {object} [options]
+ * @param {boolean} [options.includeFootnotes=true]  render & include footnotes/endnotes
  * @returns {Promise<{ items: DocItem[], hasHeadings: boolean, headingCount: number, tocLines: string[] }>}
  */
-export async function analyzeDocx(file, onProgress = () => {}) {
+export async function analyzeDocx(file, onProgress = () => {}, options = {}) {
+  const { includeFootnotes = true } = options;
   const container = document.createElement('div');
   container.style.display = 'none';
   document.body.appendChild(container);
 
   try {
     onProgress(5);
-    await renderAsync(file, container);
+    // When footnotes are excluded, tell docx-preview not to render them at all,
+    // so their text never appears in the extracted content.
+    await renderAsync(file, container, undefined, {
+      renderFootnotes: includeFootnotes,
+      renderEndnotes: includeFootnotes
+    });
     onProgress(20);
 
     const elements = Array.from(
@@ -186,11 +194,12 @@ export function buildTocChapter(tocLines) {
  *   - 'auto':     use headings if the document has them, otherwise chunk
  * @param {number} [options.paragraphsPerChapter=20]  used in chunk mode
  * @param {boolean} [options.includeToc=true]  prepend the document's own TOC as a chapter
+ * @param {boolean} [options.includeFootnotes=true]  include footnotes/endnotes text
  * @returns {Promise<ParsedChapter[]>}
  */
 export async function extractChaptersFromDocx(file, onProgress = () => {}, options = {}) {
-  const { mode = 'auto', paragraphsPerChapter = 20, includeToc = true } = options;
-  const { items, hasHeadings, tocLines } = await analyzeDocx(file, onProgress);
+  const { mode = 'auto', paragraphsPerChapter = 20, includeToc = true, includeFootnotes = true } = options;
+  const { items, hasHeadings, tocLines } = await analyzeDocx(file, onProgress, { includeFootnotes });
 
   let chapters;
   if (mode === 'chunks' || (mode === 'auto' && !hasHeadings)) {
