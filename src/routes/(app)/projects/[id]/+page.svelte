@@ -437,38 +437,40 @@
   }
 
   /** Called by BlockEditor when user edits source blocks (on blur/paste/Enter only).
-   * IMPORTANT: Because BlockEditor uses bind:blocks, the `blocks` state is already
-   * synced with newBlocks by the time this runs. We only mutate if we need to add
-   * metadata (outOfSync, sentences). Otherwise we do nothing to avoid unnecessary re-renders.
+   * Because BlockEditor uses bind:blocks, `blocks` is already synced with newBlocks.
+   * We (a) apply any metadata changes (outOfSync, sentences init), and
+   * (b) ALWAYS persist — even a pure content edit with no metadata change must be
+   * saved, otherwise switching chapters discards it.
    */
   async function onBlocksChange(/** @type {Block[]} */ newBlocks) {
-    let hasChanges = false;
+    let metaChanged = false;
     const updated = newBlocks.map((nb) => {
       const hadTranslation = (nb.sentences?.some(s => s.status === 'done')) || !!nb.editedTranslation;
       const contentDrifted = nb.originalContent !== undefined && nb.content !== nb.originalContent;
 
       // Mark outOfSync when source drifts from snapshot
       if (hadTranslation && contentDrifted && !nb.outOfSync) {
-        hasChanges = true;
+        metaChanged = true;
         return { ...nb, outOfSync: true };
       }
       // Clear outOfSync if content matches snapshot again
       if (hadTranslation && !contentDrifted && nb.outOfSync) {
-        hasChanges = true;
+        metaChanged = true;
         return { ...nb, outOfSync: false };
       }
       // New block has no sentences array - initialize it
       if (!nb.sentences) {
-        hasChanges = true;
+        metaChanged = true;
         return { ...nb, sentences: makeSentences(nb.content, '') };
       }
       return nb;
     });
-    // Only reassign and save if we actually made changes - avoids spurious re-renders
-    if (hasChanges) {
+    // Reassign only when metadata actually changed (avoids spurious re-renders),
+    // but persist on every edit so content changes are never lost on chapter switch.
+    if (metaChanged) {
       blocks = updated;
-      await saveBlocks();
     }
+    await saveBlocks();
   }
 
   function stopTranslation() { abortController?.abort(); }
@@ -495,13 +497,33 @@
   /** @param {Block} block */
   async function retranslateSingleBlock(block) {
     if (!selectedChapter || !settings?.openRouterApiKey || !translationModel) return;
-    // Reset block sentences
+    // Reset block: clear any manual edit + sentences, back to pending
     const idx = blocks.findIndex(b => b.id === block.id);
     if (idx !== -1) {
-      blocks[idx] = { ...blocks[idx], outOfSync: false, sentences: makeSentences(block.content, '') };
+      blocks[idx] = { ...blocks[idx], status: 'pending', editedTranslation: null, outOfSync: false, sentences: makeSentences(block.content, '') };
       blocks = [...blocks];
     }
     await runTranslation([blocks[idx] ?? block]);
+  }
+
+  // Confirm dialog before re-translating a block the user has hand-edited
+  /** @type {Block | null} */
+  let retranslateConfirmBlock = $state(null);
+
+  /** @param {Block} block */
+  function requestRetranslate(block) {
+    // If the block was hand-edited, confirm before discarding the edit
+    if (block.status === 'edited') {
+      retranslateConfirmBlock = block;
+    } else {
+      retranslateSingleBlock(block);
+    }
+  }
+
+  async function confirmRetranslate() {
+    const block = retranslateConfirmBlock;
+    retranslateConfirmBlock = null;
+    if (block) await retranslateSingleBlock(block);
   }
 
   /**
@@ -1054,6 +1076,43 @@ Rules:
     if (selectedChapter?.id === _chapter.id) { selectedChapter = null; blocks = []; }
   }
 
+  // --- Bulk chapter selection / deletion ---
+  let selectMode = $state(false);
+  /** @type {Set<number>} */
+  let selectedChapterIds = $state(new Set());
+
+  function toggleSelectMode() {
+    selectMode = !selectMode;
+    if (!selectMode) selectedChapterIds = new Set();
+  }
+
+  /** @param {number} id */
+  function toggleChapterSelected(id) {
+    const next = new Set(selectedChapterIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    selectedChapterIds = next;
+  }
+
+  function selectAllChapters() {
+    if (selectedChapterIds.size === chapters.length) {
+      selectedChapterIds = new Set();
+    } else {
+      selectedChapterIds = new Set(chapters.map(c => c.id));
+    }
+  }
+
+  async function deleteSelectedChapters() {
+    const ids = [...selectedChapterIds];
+    if (ids.length === 0) return;
+    if (!confirm(`حذف ${ids.length} فصل انتخاب‌شده؟ این عمل قابل بازگشت نیست.`)) return;
+    for (const id of ids) {
+      await currentProjectStore.deleteChapter(id);
+      if (selectedChapter?.id === id) { selectedChapter = null; blocks = []; }
+    }
+    selectedChapterIds = new Set();
+    selectMode = false;
+  }
+
   function confirmReset() { showResetConfirm = true; }
 
   async function doReset() {
@@ -1137,28 +1196,69 @@ Rules:
         <span class="truncate">{project?.title || '...'}</span>
       </a>
     </div>
+
+    <!-- Chapter list toolbar -->
+    {#if chapters.length > 0}
+      <div class="px-2 py-1.5 border-b flex items-center justify-between gap-1">
+        <span class="text-[11px] text-muted-foreground">{chapters.length} فصل</span>
+        {#if selectMode}
+          <div class="flex items-center gap-1">
+            <button onclick={selectAllChapters}
+              class="text-[11px] px-1.5 py-0.5 rounded hover:bg-muted transition-colors text-muted-foreground">
+              {selectedChapterIds.size === chapters.length ? 'لغو همه' : 'همه'}
+            </button>
+            <button onclick={deleteSelectedChapters} disabled={selectedChapterIds.size === 0}
+              class="text-[11px] px-1.5 py-0.5 rounded text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40">
+              حذف ({selectedChapterIds.size})
+            </button>
+            <button onclick={toggleSelectMode}
+              class="text-[11px] px-1.5 py-0.5 rounded hover:bg-muted transition-colors">بستن</button>
+          </div>
+        {:else}
+          <button onclick={toggleSelectMode}
+            class="text-[11px] px-1.5 py-0.5 rounded hover:bg-muted transition-colors text-muted-foreground inline-flex items-center gap-1" title="انتخاب چند فصل برای حذف">
+            <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            انتخاب
+          </button>
+        {/if}
+      </div>
+    {/if}
+
     <div class="flex-1 overflow-y-auto p-2 space-y-0.5">
       {#each chapters as chapter, chapterIndex (chapter.id)}
         {@const st = chapterStatus(chapter)}
-        <div class="group flex items-center gap-1 rounded-lg {selectedChapter?.id === chapter.id ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}">
-          <button onclick={() => selectChapter(chapter)} class="flex-1 text-right px-3 py-2 text-sm truncate">
-            <div class="flex items-center gap-1.5">
-              <!-- Translation status dot -->
-              {#if st === 'done'}
-                <span class="w-2 h-2 rounded-full shrink-0 bg-green-500" title="ترجمه کامل"></span>
-              {:else if st === 'partial'}
-                <span class="w-2 h-2 rounded-full shrink-0 bg-amber-500" title="ترجمه ناقص"></span>
-              {:else}
-                <span class="w-2 h-2 rounded-full shrink-0 border border-muted-foreground/40 {selectedChapter?.id === chapter.id ? 'border-primary-foreground/50' : ''}" title="ترجمه‌نشده"></span>
-              {/if}
-              <span class="text-[11px] tabular-nums shrink-0 {selectedChapter?.id === chapter.id ? 'text-primary-foreground/60' : 'text-muted-foreground'}">{chapterIndex + 1}.</span>
-              <span class="truncate">{chapter.title}</span>
-            </div>
-          </button>
-          <button onclick={() => deleteChapter(chapter)} title="حذف فصل"
-            class="p-1.5 ml-1 opacity-0 group-hover:opacity-100 transition-opacity {selectedChapter?.id === chapter.id ? 'text-primary-foreground/70 hover:text-primary-foreground' : 'text-muted-foreground hover:text-destructive'}">
-            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-          </button>
+        {@const isSel = selectedChapterIds.has(chapter.id)}
+        <div class="group flex items-center gap-1 rounded-lg {selectMode && isSel ? 'bg-primary/10 ring-1 ring-primary/30' : selectedChapter?.id === chapter.id && !selectMode ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}">
+          {#if selectMode}
+            <button onclick={() => toggleChapterSelected(chapter.id)} class="flex-1 text-right px-3 py-2 text-sm truncate" aria-label="انتخاب فصل">
+              <div class="flex items-center gap-2">
+                <span class="w-4 h-4 rounded border flex items-center justify-center shrink-0 {isSel ? 'bg-primary border-primary text-primary-foreground' : 'border-muted-foreground/40'}">
+                  {#if isSel}<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>{/if}
+                </span>
+                <span class="text-[11px] tabular-nums shrink-0 text-muted-foreground">{chapterIndex + 1}.</span>
+                <span class="truncate">{chapter.title}</span>
+              </div>
+            </button>
+          {:else}
+            <button onclick={() => selectChapter(chapter)} class="flex-1 text-right px-3 py-2 text-sm truncate">
+              <div class="flex items-center gap-1.5">
+                <!-- Translation status dot -->
+                {#if st === 'done'}
+                  <span class="w-2 h-2 rounded-full shrink-0 bg-green-500" title="ترجمه کامل"></span>
+                {:else if st === 'partial'}
+                  <span class="w-2 h-2 rounded-full shrink-0 bg-amber-500" title="ترجمه ناقص"></span>
+                {:else}
+                  <span class="w-2 h-2 rounded-full shrink-0 border border-muted-foreground/40 {selectedChapter?.id === chapter.id ? 'border-primary-foreground/50' : ''}" title="ترجمه‌نشده"></span>
+                {/if}
+                <span class="text-[11px] tabular-nums shrink-0 {selectedChapter?.id === chapter.id ? 'text-primary-foreground/60' : 'text-muted-foreground'}">{chapterIndex + 1}.</span>
+                <span class="truncate">{chapter.title}</span>
+              </div>
+            </button>
+            <button onclick={() => deleteChapter(chapter)} title="حذف فصل"
+              class="p-1.5 ml-1 opacity-0 group-hover:opacity-100 transition-opacity {selectedChapter?.id === chapter.id ? 'text-primary-foreground/70 hover:text-primary-foreground' : 'text-muted-foreground hover:text-destructive'}">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+            </button>
+          {/if}
         </div>
       {/each}
     </div>
@@ -1538,7 +1638,7 @@ Rules:
                           اصل تغییر کرد
                         </span>
                         <div class="flex items-center gap-1 mr-auto">
-                          <button onclick={() => retranslateSingleBlock(block)}
+                          <button onclick={() => requestRetranslate(block)}
                             class="text-[10px] px-2 py-0.5 rounded bg-amber-500 text-white hover:bg-amber-600 transition-colors" title="ترجمه مجدد با توجه به تغییرات">
                             ترجمه مجدد
                           </button>
@@ -1567,6 +1667,11 @@ Rules:
                               class="absolute top-1 left-1 p-1 rounded opacity-0 group-hover/out:opacity-100 transition-opacity text-muted-foreground hover:text-foreground hover:bg-muted"
                               title="ویرایش" aria-label="ویرایش">
                               <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+                            </button>
+                            <button onclick={() => requestRetranslate(block)}
+                              class="absolute top-1 left-7 p-1 rounded opacity-0 group-hover/out:opacity-100 transition-opacity text-muted-foreground hover:text-primary hover:bg-primary/10"
+                              title="ترجمه مجدد این بند" aria-label="ترجمه مجدد">
+                              <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
                             </button>
                           {/if}
                           <!-- Tag that this block was hand-edited -->
@@ -1929,6 +2034,27 @@ Rules:
       <div class="flex justify-end mt-4">
         <button onclick={() => { showImportChoice = false; pendingWordFile = null; }}
           class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">انصراف</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Confirm re-translate of a hand-edited block -->
+{#if retranslateConfirmBlock}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={() => retranslateConfirmBlock = null}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="bg-card border rounded-xl p-5 w-full max-w-sm mx-4 shadow-xl" onclick={(e) => e.stopPropagation()} dir="rtl">
+      <h3 class="text-base font-semibold mb-2">ترجمه مجدد این بند؟</h3>
+      <p class="text-sm text-muted-foreground mb-4">
+        این بند را دستی ویرایش کرده‌اید. با ترجمه مجدد، ویرایش دستی شما حذف و متن از نو ترجمه می‌شود. مطمئن هستید؟
+      </p>
+      <div class="flex gap-2 justify-end">
+        <button onclick={() => retranslateConfirmBlock = null} class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">انصراف</button>
+        <button onclick={confirmRetranslate}
+          class="h-9 px-4 rounded-md bg-amber-500 text-white text-sm hover:bg-amber-600 transition-colors">بله، دوباره ترجمه کن</button>
       </div>
     </div>
   </div>

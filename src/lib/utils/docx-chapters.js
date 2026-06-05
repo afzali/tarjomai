@@ -100,12 +100,14 @@ export function groupByParagraphChunks(items, paragraphsPerChapter = 20) {
  * contains a usable heading structure (a real table of contents). The caller
  * can then decide whether to follow the document's headings or auto-chunk.
  *
- * TOC field entries (docx_toc*) are dropped — they are just a generated index,
- * not real content, so they must not leak into the chapter bodies.
+ * The generated table-of-contents field entries (docx_toc*) are collected
+ * separately as `tocLines` (with their page numbers preserved) so the caller
+ * can offer them as a dedicated, translatable "فهرست مطالب" chapter instead of
+ * letting them leak into the body of the first real chapter.
  *
  * @param {File} file
  * @param {(progress: number) => void} [onProgress]  0..100
- * @returns {Promise<{ items: DocItem[], hasHeadings: boolean, headingCount: number }>}
+ * @returns {Promise<{ items: DocItem[], hasHeadings: boolean, headingCount: number, tocLines: string[] }>}
  */
 export async function analyzeDocx(file, onProgress = () => {}) {
   const container = document.createElement('div');
@@ -123,14 +125,21 @@ export async function analyzeDocx(file, onProgress = () => {}) {
 
     /** @type {DocItem[]} */
     const items = [];
+    /** @type {string[]} */
+    const tocLines = [];
     let headingCount = 0;
     const total = elements.length || 1;
 
     for (let i = 0; i < elements.length; i++) {
       const el = elements[i];
 
-      // Skip generated table-of-contents field entries entirely
-      if (isTocEntry(el)) continue;
+      // Collect the document's own table-of-contents lines (keep page numbers),
+      // but don't mix them into the regular content stream.
+      if (isTocEntry(el)) {
+        const tline = normalizeTocLine(el);
+        if (tline) tocLines.push(tline);
+        continue;
+      }
 
       const level = detectHeadingLevel(el);
       const text = displayNormalizer.normalizeForDisplay(el.textContent || '').trim();
@@ -145,10 +154,24 @@ export async function analyzeDocx(file, onProgress = () => {}) {
     }
 
     onProgress(95);
-    return { items, hasHeadings: headingCount > 0, headingCount };
+    return { items, hasHeadings: headingCount > 0, headingCount, tocLines };
   } finally {
     document.body.removeChild(container);
   }
+}
+
+/**
+ * Build a "فهرست مطالب" chapter from collected TOC lines, or null if empty.
+ * Each entry is separated by a blank line so the workspace turns every TOC line
+ * into its own block — keeping them on separate lines in all views and letting
+ * each line be translated/aligned individually.
+ * @param {string[]} tocLines
+ * @returns {ParsedChapter | null}
+ */
+export function buildTocChapter(tocLines) {
+  const lines = (tocLines || []).filter(Boolean);
+  if (lines.length === 0) return null;
+  return { title: 'فهرست مطالب', sourceText: ['فهرست مطالب', ...lines].join('\n\n'), level: 1 };
 }
 
 /**
@@ -162,11 +185,12 @@ export async function analyzeDocx(file, onProgress = () => {}) {
  *   - 'chunks':   ignore headings, split into fixed-size paragraph chunks
  *   - 'auto':     use headings if the document has them, otherwise chunk
  * @param {number} [options.paragraphsPerChapter=20]  used in chunk mode
+ * @param {boolean} [options.includeToc=true]  prepend the document's own TOC as a chapter
  * @returns {Promise<ParsedChapter[]>}
  */
 export async function extractChaptersFromDocx(file, onProgress = () => {}, options = {}) {
-  const { mode = 'auto', paragraphsPerChapter = 20 } = options;
-  const { items, hasHeadings } = await analyzeDocx(file, onProgress);
+  const { mode = 'auto', paragraphsPerChapter = 20, includeToc = true } = options;
+  const { items, hasHeadings, tocLines } = await analyzeDocx(file, onProgress);
 
   let chapters;
   if (mode === 'chunks' || (mode === 'auto' && !hasHeadings)) {
@@ -175,8 +199,30 @@ export async function extractChaptersFromDocx(file, onProgress = () => {}, optio
     chapters = groupIntoChapters(items);
   }
 
+  // Prepend the document's own table of contents (with page numbers) as a
+  // translatable chapter, mirroring how it appears in the Word file.
+  if (includeToc) {
+    const tocChapter = buildTocChapter(tocLines);
+    if (tocChapter) chapters = [tocChapter, ...chapters];
+  }
+
   onProgress(100);
   return chapters;
+}
+
+/**
+ * Normalize a single TOC field entry to a clean "title .... page" line.
+ * docx-preview renders TOC entries with dotted leaders and the page number at
+ * the end; we collapse the whitespace/leaders but keep the title and page.
+ * @param {Element} el
+ * @returns {string}
+ */
+function normalizeTocLine(el) {
+  let text = displayNormalizer.normalizeForDisplay(el.textContent || '');
+  // Collapse long dotted/space leaders (e.g. "عنوان...........۱۲") into " … "
+  text = text.replace(/[.\u2026\s]{3,}(?=\S*\d?\s*$)/, ' … ');
+  text = text.replace(/\s{2,}/g, ' ').trim();
+  return text;
 }
 
 /**
