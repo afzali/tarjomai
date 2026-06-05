@@ -1179,6 +1179,13 @@ Rules:
     return blocks.map(b => blockDisplayText(b)).join('\n\n');
   }
 
+  /** Source text built from the LIVE blocks, so edits/deletions the user made
+   * are reflected. Using the stored chapter.sourceText would send stale source
+   * (e.g. a paragraph the user already deleted). */
+  function computeFinalSource() {
+    return blocks.map(b => b.content).join('\n\n');
+  }
+
   /** Count sentences in a block with errors */
   function blockErrorCount(/** @type {Block} */ block) {
     return block.sentences?.filter(s => s.status === 'error').length || 0;
@@ -1868,10 +1875,11 @@ Rules:
             chapterId={selectedChapter.id}
             {projectId}
             operationType="translation"
-            sourceText={selectedChapter.sourceText || ''}
+            sourceText={computeFinalSource()}
             outputText={computeFinalOutput()}
             apiKey={settings?.openRouterApiKey || ''}
             defaultModel={reviewModel}
+            reviewRules={rulesSection}
             bind:quote={reviewQuote}
             onClose={() => reviewOpen = false}
           />

@@ -621,6 +621,13 @@
   function computeFinalOutput() {
     return blocks.map(b => b.status === 'edited' ? (b.editedText || b.outputText || '') : (b.outputText || b.content)).join('\n\n');
   }
+
+  /** Source text built from the LIVE blocks, so edits/deletions the user made
+   * are reflected. Using the stored chapter.sourceText would send stale source
+   * (e.g. a paragraph the user already deleted). */
+  function computeFinalSource() {
+    return blocks.map(b => b.content).join('\n\n');
+  }
 </script>
 
 <div class="flex h-screen overflow-hidden bg-background" dir="rtl">
@@ -1016,7 +1023,7 @@
             chapterId={selectedChapter.id}
             {projectId}
             operationType="editorial"
-            sourceText={selectedChapter.sourceText || ''}
+            sourceText={computeFinalSource()}
             outputText={computeFinalOutput()}
             apiKey={settings?.openRouterApiKey || ''}
             defaultModel={reviewModel}

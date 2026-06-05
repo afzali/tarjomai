@@ -20,7 +20,7 @@
    * @property {() => void} [onClose]
    */
 
-  /** @type {ReviewPanelProps} */
+  /** @type {ReviewPanelProps & { reviewRules?: string }} */
   let {
     chapterId,
     projectId = null,
@@ -29,6 +29,7 @@
     outputText = '',
     apiKey = '',
     defaultModel = 'google/gemini-3.5-flash',
+    reviewRules = '',
     quote = $bindable(''),
     onClose = null
   } = $props();
@@ -135,6 +136,60 @@ ${(outputText || '').substring(0, 2000)}`;
     messages = [];
   }
 
+  /**
+   * Send the WHOLE chapter (full source + full translation) to the chat model
+   * for a final review against the project's translation rules. Unlike send(),
+   * nothing is truncated. The model is asked to flag mistranslations, spelling
+   * errors, inconsistencies, etc., so the user can fix them by hand.
+   */
+  async function reviewWholeChapter() {
+    if (reviewing || !chapterId || !apiKey) return;
+    reviewing = true;
+
+    const rulesBlock = (reviewRules || '').trim()
+      ? `\n\nقوانین و سبک ترجمه‌ی این پروژه (ملاک بررسی):\n${reviewRules.trim()}`
+      : '';
+
+    const system = `تو یک ویراستار و مصحح حرفه‌ای دوزبانه هستی. متن اصلی و ترجمه‌ی کامل یک فصل به تو داده می‌شود.
+وظیفه‌ات: ترجمه را با دقت بررسی کن و فقط مشکلات را گزارش بده، شامل:
+- خطاهای ترجمه و انتقال معنا
+- جملات جا افتاده یا اضافه
+- غلط‌های املایی و نگارشی
+- ناهماهنگی اصطلاحات
+- مغایرت با قوانین و سبک خواسته‌شده
+گزارش را کوتاه و فهرست‌وار بده و در صورت امکان شماره‌ی بند/جمله و اصلاح پیشنهادی را ذکر کن. اگر مشکلی نبود، بنویس که ترجمه سالم است.${rulesBlock}`;
+
+    const userMsg = `لطفاً کل این فصل را بررسی کن.
+
+متن اصلی:
+${sourceText || '(خالی)'}
+
+ترجمه:
+${outputText || '(خالی)'}`;
+
+    const placeholder = '🔍 بررسی کامل فصل (متن اصلی + ترجمه) برای مدل ارسال شد...';
+    await reviewService.addMessage(chapterId, 'user', placeholder);
+    messages = await reviewService.getMessages(chapterId);
+    await scrollToBottom();
+
+    try {
+      const result = await openrouterService.sendMessage(
+        apiKey,
+        model,
+        [{ role: 'system', content: system }, { role: 'user', content: userMsg }]
+      );
+      const content = result.content || result.error || 'خطا در دریافت پاسخ';
+      await reviewService.addMessage(chapterId, 'assistant', content, model);
+      messages = await reviewService.getMessages(chapterId);
+      await scrollToBottom();
+    } catch (e) {
+      await reviewService.addMessage(chapterId, 'assistant', 'خطا: ' + e.message);
+      messages = await reviewService.getMessages(chapterId);
+    } finally {
+      reviewing = false;
+    }
+  }
+
   function handleKeydown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -193,6 +248,16 @@ ${(outputText || '').substring(0, 2000)}`;
           </div>
         {/if}
       </div>
+
+      <button
+        onclick={reviewWholeChapter}
+        disabled={reviewing}
+        class="text-xs px-2 py-1 rounded-md border border-primary/30 bg-primary/5 text-primary hover:bg-primary/10 transition-colors disabled:opacity-40 inline-flex items-center gap-1 shrink-0"
+        title="ارسال کل متن فصل (اصلی + ترجمه) برای بررسی نهایی"
+      >
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        بررسی کلی
+      </button>
 
       {#if messages.length > 0}
         <button
