@@ -606,7 +606,7 @@
           settings.openRouterApiKey,
           translationModel,
           [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }],
-          { signal, projectId, chapterId: selectedChapter?.id, temperature: translationTemperature, max_tokens: estimateMaxTokens(sources) }
+          { signal, projectId, chapterId: selectedChapter?.id, temperature: translationTemperature, max_tokens: estimateMaxTokens(sources), response_format: { type: 'json_object' } }
         );
         if (signal.aborted) break;
         if (result.success !== false) {
@@ -642,7 +642,10 @@
             { signal, projectId, chapterId: selectedChapter?.id, temperature: translationTemperature, max_tokens: estimateMaxTokens(sentences[si].source) }
           );
           if (signal.aborted) break;
-          const t = r.success !== false ? (r.content || '').trim() : '';
+          // Only accept a clean, complete answer. A truncated response (hit the
+          // token limit) is partial/garbled, so treat it as an error instead of
+          // saving broken text.
+          const t = (r.success !== false && !r.truncated) ? (r.content || '').trim() : '';
           sentences[si] = t
             ? { ...sentences[si], translation: t, status: 'done' }
             : { ...sentences[si], status: 'error' };
@@ -680,8 +683,11 @@
   function estimateMaxTokens(src) {
     const text = Array.isArray(src) ? src.join(' ') : (src || '');
     const chars = text.length;
-    const est = Math.ceil(chars * 3) + 256; // 3x for output + JSON keys/quotes
-    return Math.min(MAX_OUTPUT_TOKENS, Math.max(512, est));
+    // 3x source chars for the translation + JSON overhead, PLUS a fixed budget
+    // for mandatory reasoning tokens (Gemini Flash forces reasoning on), so the
+    // model never runs out of budget before producing the final answer.
+    const est = Math.ceil(chars * 3) + 256 + 1500;
+    return Math.min(MAX_OUTPUT_TOKENS, Math.max(2048, est));
   }
 
   /**
