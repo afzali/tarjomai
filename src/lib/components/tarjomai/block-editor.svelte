@@ -81,10 +81,12 @@
 
   /** @param {number} idx @param {string} content */
   function updateContent(idx, content) {
-    const hadOutput = !!(blocks[idx].outputText);
+    const target = blocks[idx];
+    if (!target) return; // block may have gone away (e.g. chapter switched on blur)
+    const hadOutput = !!(target.outputText);
     // Mark outOfSync silently - the parent page shows a unified indicator + sync button
     // instead of a blocking confirm prompt.
-    blocks[idx] = { ...blocks[idx], content, outOfSync: hadOutput ? true : blocks[idx].outOfSync ?? false };
+    blocks[idx] = { ...target, content, outOfSync: hadOutput ? true : target.outOfSync ?? false };
     blocks = [...blocks];
     notify();
   }
@@ -164,10 +166,12 @@
    * @param {number} idx
    */
   function handleBlur(e, idx) {
-    const el = blockRefs[blocks[idx]?.id ?? ''];
+    const block = blocks[idx];
+    if (!block) return; // block removed / chapter switched while blurring
+    const el = blockRefs[block.id ?? ''];
     const content = (el?.textContent || '').replace(/\n/g, '');
     // Only update with outOfSync check on blur - this is when we sync DOM to state
-    if (content !== blocks[idx]?.content) {
+    if (content !== block.content) {
       updateContent(idx, content);
     }
   }

@@ -2,6 +2,70 @@ import { usageService } from './usage.service.js';
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
 
+// Toggle verbose request/response logging in the browser console.
+// Set window.__TARJOMAI_DEBUG__ = false in the console to silence it.
+const DEBUG = true;
+
+/** Rough token estimate: Persian/Arabic ≈ 1 token/char, Latin ≈ 1 token/4 chars. */
+function estimateTokens(/** @type {string} */ text) {
+  if (!text) return 0;
+  const nonLatin = (text.match(/[^\x00-\x7F]/g) || []).length;
+  const latin = text.length - nonLatin;
+  return Math.round(nonLatin + latin / 4);
+}
+
+/** @param {string} model @param {any[]} messages @param {any} options */
+function logRequest(model, messages, options) {
+  if (!DEBUG || typeof window === 'undefined' || window.__TARJOMAI_DEBUG__ === false) return;
+  try {
+    let totalChars = 0;
+    let totalTokens = 0;
+    const parts = messages.map((m) => {
+      const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+      const chars = content.length;
+      const tokens = estimateTokens(content);
+      totalChars += chars;
+      totalTokens += tokens;
+      return { role: m.role, chars, estTokens: tokens, preview: content.slice(0, 120) };
+    });
+    console.groupCollapsed(
+      `%c[OpenRouter →] ${model}  |  ~${totalTokens} tok in  |  ${totalChars} chars  |  max_tokens=${options.max_tokens ?? 8000}`,
+      'color:#2563eb;font-weight:bold'
+    );
+    console.log('model:', model);
+    console.log('options:', { temperature: options.temperature ?? 0, max_tokens: options.max_tokens ?? 8000, seed: options.seed ?? 42, top_p: options.top_p ?? 1, reasoning: options.reasoning ?? { exclude: true } });
+    console.log('estimated input tokens:', totalTokens, '| total chars:', totalChars);
+    console.table(parts);
+    for (const m of messages) {
+      const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+      console.log(`%c--- ${m.role} (full) ---`, 'color:#64748b', `\n${content}`);
+    }
+    console.groupEnd();
+  } catch { /* logging must never break the request */ }
+}
+
+/** @param {string} model @param {any} result @param {number} ms */
+function logResponse(model, result, ms) {
+  if (!DEBUG || typeof window === 'undefined' || window.__TARJOMAI_DEBUG__ === false) return;
+  try {
+    const content = result?.content || '';
+    const usage = result?.usage;
+    console.groupCollapsed(
+      `%c[OpenRouter ←] ${model}  |  ${result?.success === false ? 'FAILED' : 'ok'}  |  ${Math.round(ms)}ms  |  ${content.length} chars out`,
+      `color:${result?.success === false ? '#dc2626' : '#16a34a'};font-weight:bold`
+    );
+    if (result?.success === false) {
+      console.log('error:', result.error);
+    } else {
+      console.log('finishReason:', result.finishReason, '| truncated:', result.truncated, '| empty:', result.empty);
+      if (usage) console.log('ACTUAL usage from API:', usage);
+      console.log('output chars:', content.length, '| est output tokens:', estimateTokens(content));
+      console.log(`%c--- response (full) ---`, 'color:#64748b', `\n${content}`);
+    }
+    console.groupEnd();
+  } catch { /* ignore */ }
+}
+
 export const openrouterService = {
   async testConnection(apiKey) {
     try {
@@ -53,6 +117,9 @@ export const openrouterService = {
     let lastError = null;
     const signal = options.signal;
 
+    logRequest(model, messages, options);
+    const _t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       if (signal?.aborted) {
         return { success: false, error: 'لغو شده توسط کاربر', cancelled: true };
@@ -71,7 +138,7 @@ export const openrouterService = {
             model,
             messages,
             temperature: options.temperature ?? 0,
-            max_tokens: options.max_tokens ?? 16000,
+            max_tokens: options.max_tokens ?? 8000,
             seed: options.seed ?? 42,
             top_p: options.top_p ?? 1,
             // For reasoning-capable models (Gemini Pro, o-series, R1, ...): by default
@@ -87,6 +154,19 @@ export const openrouterService = {
           if (response.status === 401) {
             return { success: false, error: 'API Key نامعتبر است' };
           }
+
+          if (response.status === 402) {
+            // OpenRouter pre-reserves the maximum possible cost (based on max_tokens)
+            // before running. With pricey models this reservation can exceed the
+            // available balance even when the real cost would be tiny.
+            const r402 = {
+              success: false,
+              error: 'اعتبار کافی برای این درخواست رزرو نشد (۴۰۲). موجودی OpenRouter را افزایش دهید یا مدل ارزان‌تری انتخاب کنید.'
+            };
+            if (DEBUG) console.warn('[OpenRouter 402] raw error from API:', errorData);
+            logResponse(model, r402, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - _t0);
+            return r402;
+          }
           
           if (response.status === 429) {
             const waitTime = Math.pow(2, attempt) * 1000;
@@ -94,10 +174,12 @@ export const openrouterService = {
             continue;
           }
           
-          return { 
-            success: false, 
-            error: errorData.error?.message || `خطا: ${response.status}` 
+          const rErr = {
+            success: false,
+            error: errorData.error?.message || `خطا: ${response.status}`
           };
+          logResponse(model, rErr, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - _t0);
+          return rErr;
         }
 
         const data = await response.json();
@@ -121,7 +203,7 @@ export const openrouterService = {
         // Reasoning models put their final answer in content; reasoning (if any)
         // is returned separately and must NOT be mixed into the translation.
         const content = msg.content || '';
-        return {
+        const rOk = {
           success: true,
           content,
           reasoning: msg.reasoning || '',
@@ -133,6 +215,8 @@ export const openrouterService = {
           empty: !content.trim(),
           usage: data.usage
         };
+        logResponse(model, rOk, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - _t0);
+        return rOk;
       } catch (error) {
         if (error.name === 'AbortError') {
           return { success: false, error: 'لغو شده توسط کاربر', cancelled: true };
@@ -164,7 +248,7 @@ export const openrouterService = {
           model,
           messages,
           temperature: options.temperature ?? 0,
-          max_tokens: options.max_tokens ?? 16000,
+          max_tokens: options.max_tokens ?? 8000,
           seed: options.seed ?? 42,
           top_p: options.top_p ?? 1,
           reasoning: options.reasoning ?? { exclude: true },
