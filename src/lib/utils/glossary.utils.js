@@ -181,10 +181,77 @@ export function buildGlossaryPromptSection(entries) {
 ${lines.join('\n')}`;
 }
 
+/**
+ * Normalize text for fuzzy matching: drop Arabic/Persian diacritics, unify
+ * common letter variants (ي/ی, ك/ک, ة/ه, آ/ا, ؤئإأ → ا/و/ی), turn ZWNJ and
+ * punctuation into spaces, and collapse whitespace.
+ * @param {string} s
+ * @returns {string}
+ */
+function normalizeForMatch(s) {
+  return String(s || '')
+    .replace(/[\u064B-\u0652\u0670\u0640]/g, '')      // harakat + tatweel
+    .replace(/[يىئ]/g, 'ی')
+    .replace(/ك/g, 'ک')
+    .replace(/[ةه]/g, 'ه')
+    .replace(/[أإآا]/g, 'ا')
+    .replace(/[ؤو]/g, 'و')
+    .replace(/[\u200C\u200F\u200E]/g, ' ')             // ZWNJ / direction marks
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')                 // punctuation → space
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Select only the glossary entries whose source term is relevant to the given
+ * text, so we don't send the entire glossary on every request.
+ *
+ * Matching is fuzzy/normalized: diacritics and letter variants are ignored.
+ * A term matches if (a) its normalized form appears as a substring of the
+ * normalized text, or (b) "enough" of its words appear in the text (covers
+ * inflected/partial forms — the "شبیه" case the user asked for).
+ *
+ * @param {Array<{source:string,target:string,note?:string}>} entries
+ * @param {string} text
+ * @returns {Array<{source:string,target:string,note?:string}>}
+ */
+export function filterGlossaryForText(entries, text) {
+  const list = (entries || []).filter(e => e && e.source && e.target);
+  if (list.length === 0 || !text) return [];
+  const hay = normalizeForMatch(text);
+  if (!hay) return [];
+  const haySet = new Set(hay.split(' ').filter(Boolean));
+
+  return list.filter((e) => {
+    const term = normalizeForMatch(e.source);
+    if (!term) return false;
+    // Whole-term substring hit (catches multi-word terms appearing verbatim)
+    if (hay.includes(term)) return true;
+    // Word-overlap: keep the term if a good share of its words occur in the text
+    const words = term.split(' ').filter(w => w.length >= 2);
+    if (words.length === 0) {
+      // very short term (1 char or digits) → only the substring test applies
+      return false;
+    }
+    let hits = 0;
+    for (const w of words) {
+      // exact word, or any text word that contains/startsWith it (inflections)
+      if (haySet.has(w)) { hits++; continue; }
+      for (const hw of haySet) {
+        if (hw.length >= 3 && (hw.includes(w) || w.includes(hw))) { hits++; break; }
+      }
+    }
+    // require at least ~60% of the term's words to be present
+    return hits / words.length >= 0.6;
+  });
+}
+
 export default {
   autoChunkCount,
   chunkText,
   parseGlossaryResponse,
   mergeGlossaries,
-  buildGlossaryPromptSection
+  buildGlossaryPromptSection,
+  filterGlossaryForText
 };

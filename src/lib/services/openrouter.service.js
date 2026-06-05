@@ -2,6 +2,11 @@ import { usageService } from './usage.service.js';
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
 
+// Default cap for output tokens. OpenRouter pre-reserves credit based on
+// max_tokens, so this is also the upper bound used when callers compute an
+// adaptive value. Change it here only — everything else reads from this.
+export const MAX_OUTPUT_TOKENS = 8000;
+
 // Toggle verbose request/response logging in the browser console.
 // Set window.__TARJOMAI_DEBUG__ = false in the console to silence it.
 const DEBUG = true;
@@ -29,11 +34,11 @@ function logRequest(model, messages, options) {
       return { role: m.role, chars, estTokens: tokens, preview: content.slice(0, 120) };
     });
     console.groupCollapsed(
-      `%c[OpenRouter →] ${model}  |  ~${totalTokens} tok in  |  ${totalChars} chars  |  max_tokens=${options.max_tokens ?? 8000}`,
+      `%c[OpenRouter →] ${model}  |  ~${totalTokens} tok in  |  ${totalChars} chars  |  max_tokens=${options.max_tokens ?? MAX_OUTPUT_TOKENS}`,
       'color:#2563eb;font-weight:bold'
     );
     console.log('model:', model);
-    console.log('options:', { temperature: options.temperature ?? 0, max_tokens: options.max_tokens ?? 8000, seed: options.seed ?? 42, top_p: options.top_p ?? 1, reasoning: options.reasoning ?? { exclude: true } });
+    console.log('options:', { temperature: options.temperature ?? 0, max_tokens: options.max_tokens ?? MAX_OUTPUT_TOKENS, seed: options.seed ?? 42, top_p: options.top_p ?? 1, reasoning: options.reasoning ?? { exclude: true } });
     console.log('estimated input tokens:', totalTokens, '| total chars:', totalChars);
     console.table(parts);
     for (const m of messages) {
@@ -138,7 +143,7 @@ export const openrouterService = {
             model,
             messages,
             temperature: options.temperature ?? 0,
-            max_tokens: options.max_tokens ?? 8000,
+            max_tokens: options.max_tokens ?? MAX_OUTPUT_TOKENS,
             seed: options.seed ?? 42,
             top_p: options.top_p ?? 1,
             // For reasoning-capable models (Gemini Pro, o-series, R1, ...): by default
@@ -248,7 +253,7 @@ export const openrouterService = {
           model,
           messages,
           temperature: options.temperature ?? 0,
-          max_tokens: options.max_tokens ?? 8000,
+          max_tokens: options.max_tokens ?? MAX_OUTPUT_TOKENS,
           seed: options.seed ?? 42,
           top_p: options.top_p ?? 1,
           reasoning: options.reasoning ?? { exclude: true },

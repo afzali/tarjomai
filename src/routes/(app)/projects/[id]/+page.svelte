@@ -5,7 +5,7 @@
   import { currentProjectStore } from '$lib/stores/currentProject.store.js';
   import projectsService from '$lib/services/projects.service.js';
   import { settingsStore } from '$lib/stores/settings.store.js';
-  import { openrouterService } from '$lib/services/openrouter.service.js';
+  import { openrouterService, MAX_OUTPUT_TOKENS } from '$lib/services/openrouter.service.js';
   import { exportUtils } from '$lib/utils/export.utils.js';
   import { fetchModels } from '$lib/stores/models.store.js';
   import { allModels, resolveDefaultModel, DEFAULT_MODELS } from '$lib/models.js';
@@ -14,7 +14,7 @@
   import FileTypeIcon from '$lib/components/tarjomai/file-type-icon.svelte';
   import ReviewPanel from '$lib/components/tarjomai/review-panel.svelte';
   import { usageService } from '$lib/services/usage.service.js';
-  import { buildGlossaryPromptSection } from '$lib/utils/glossary.utils.js';
+  import { buildGlossaryPromptSection, filterGlossaryForText } from '$lib/utils/glossary.utils.js';
 
   let projectId = $derived(parseInt($page.params.id || '0', 10) || 0);
   /** @type {any} */
@@ -168,8 +168,32 @@
 
   const outOfSyncBlocks = $derived(blocks.filter(b => b.outOfSync));
 
-  // Glossary section injected into every translation prompt (empty when no glossary)
-  const glossarySection = $derived(buildGlossaryPromptSection(config?.glossary || []));
+  // Glossary helper: only the entries relevant to a given text are sent (not the
+  // whole glossary), to keep each request small. Falls back to empty when none.
+  function glossaryFor(/** @type {string} */ text) {
+    const all = config?.glossary || [];
+    if (!all.length) return '';
+    const relevant = filterGlossaryForText(all, text);
+    return buildGlossaryPromptSection(relevant);
+  }
+
+  /**
+   * The user's translation rules to inject into every prompt. Combines the
+   * "system prompt" field with the "custom rules" list (each line a rule).
+   * Previously customRules was saved but never sent — this fixes that.
+   */
+  const customRulesText = $derived.by(() => {
+    const cr = config?.customRules;
+    const list = Array.isArray(cr) ? cr : (typeof cr === 'string' && cr ? [cr] : []);
+    return list.map((/** @type {string} */ r) => String(r).trim()).filter(Boolean).join('\n');
+  });
+
+  const rulesSection = $derived.by(() => {
+    const parts = [];
+    if (config?.systemPrompt && config.systemPrompt.trim()) parts.push(config.systemPrompt.trim());
+    if (customRulesText) parts.push(customRulesText);
+    return parts.join('\n\n');
+  });
 
   const stats = $derived.by(() => {
     const total = blocks.length;
@@ -582,7 +606,7 @@
           settings.openRouterApiKey,
           translationModel,
           [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }],
-          { signal, projectId, chapterId: selectedChapter?.id, temperature: translationTemperature }
+          { signal, projectId, chapterId: selectedChapter?.id, temperature: translationTemperature, max_tokens: estimateMaxTokens(sources) }
         );
         if (signal.aborted) break;
         if (result.success !== false) {
@@ -615,7 +639,7 @@
             settings.openRouterApiKey,
             translationModel,
             [{ role: 'system', content: fb.system }, { role: 'user', content: fb.user }],
-            { signal, projectId, chapterId: selectedChapter?.id, temperature: translationTemperature }
+            { signal, projectId, chapterId: selectedChapter?.id, temperature: translationTemperature, max_tokens: estimateMaxTokens(sentences[si].source) }
           );
           if (signal.aborted) break;
           const t = r.success !== false ? (r.content || '').trim() : '';
@@ -644,6 +668,23 @@
   }
 
   /**
+   * Estimate a sensible max_tokens for translating the given source text(s),
+   * instead of always reserving a big fixed number. OpenRouter pre-reserves
+   * credit based on max_tokens, so an oversized value causes 402 errors and
+   * blocks low-balance keys. Persian/Arabic output is token-heavy (~1 token per
+   * char), so we budget ~3× the source character count plus JSON overhead,
+   * clamped to a safe range.
+   * @param {string|string[]} src
+   * @returns {number}
+   */
+  function estimateMaxTokens(src) {
+    const text = Array.isArray(src) ? src.join(' ') : (src || '');
+    const chars = text.length;
+    const est = Math.ceil(chars * 3) + 256; // 3x for output + JSON keys/quotes
+    return Math.min(MAX_OUTPUT_TOKENS, Math.max(512, est));
+  }
+
+  /**
    * Build a batched prompt: full paragraph for context + numbered sentences,
    * asking for a JSON object mapping each sentence number to its translation.
    * @param {string} paragraph
@@ -652,7 +693,8 @@
   function buildBlockTranslationPrompt(paragraph, sources) {
     const srcLang = project?.sourceLanguage || 'English';
     const tgtLang = project?.targetLanguage || 'Persian';
-    const rules = config?.systemPrompt || '';
+    const rules = rulesSection;
+    const glossarySection = glossaryFor(paragraph + ' ' + sources.join(' '));
     const system = `You are a professional translator. Translate from ${srcLang} to ${tgtLang}.
 You receive the full paragraph for CONTEXT, then a numbered list of sentences taken from that paragraph.
 Translate EACH numbered sentence into ${tgtLang}, using the whole paragraph for context (pronouns, terminology, flow).
@@ -718,7 +760,8 @@ ${numbered}`;
   function buildTranslationPrompt(/** @type {string} */ sourceText) {
     const srcLang = project?.sourceLanguage || 'English';
     const tgtLang = project?.targetLanguage || 'Persian';
-    const rules = config?.systemPrompt || '';
+    const rules = rulesSection;
+    const glossarySection = glossaryFor(sourceText);
     const system = `You are a professional translator. Translate from ${srcLang} to ${tgtLang}.
 Rules:
 - Output ONLY the translated text. No explanations, no notes, no prefixes.
@@ -764,7 +807,9 @@ Rules:
         const srcLang = project?.sourceLanguage || 'English';
         const tgtLang = project?.targetLanguage || 'Persian';
         const langLine = `زبان مبدأ: ${srcLang} | زبان مقصد (خروجی): ${tgtLang}`;
-        const systemMsg = `${langLine}\n\n${mainPrompt}\n\n${baseRules}${glossarySection ? `\n\n${glossarySection}` : ''}`;
+        const projectRules = customRulesText ? `\n\nقوانین پروژه:\n${customRulesText}` : '';
+        const glossarySection = glossaryFor(block.content + ' ' + layer1);
+        const systemMsg = `${langLine}\n\n${mainPrompt}\n\n${baseRules}${projectRules}${glossarySection ? `\n\n${glossarySection}` : ''}`;
         const userContent = buildParagraphUserMessage(block.content, layer1);
 
         try {
@@ -772,7 +817,7 @@ Rules:
             settings.openRouterApiKey,
             paragraphModel,
             [{ role: 'system', content: systemMsg }, { role: 'user', content: userContent }],
-            { signal, projectId, chapterId: selectedChapter?.id, temperature: paragraphTemperature }
+            { signal, projectId, chapterId: selectedChapter?.id, temperature: paragraphTemperature, max_tokens: estimateMaxTokens(block.content + ' ' + layer1) }
           );
           const translated = (result.content || '').trim();
           blocks[blockIdx] = { ...blocks[blockIdx], paragraphTranslation: translated };
@@ -1155,7 +1200,7 @@ Rules:
           const result = await openrouterService.sendMessage(
             settings.openRouterApiKey, translationModel,
             [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }],
-            { signal, projectId, chapterId: selectedChapter?.id, temperature: translationTemperature }
+            { signal, projectId, chapterId: selectedChapter?.id, temperature: translationTemperature, max_tokens: estimateMaxTokens(sentences[si].source) }
           );
           sentences[si] = { ...sentences[si], translation: (result.content || '').trim(), status: 'done' };
           doneSentences += 1;
