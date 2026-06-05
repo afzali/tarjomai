@@ -898,6 +898,12 @@ Rules:
   let importProgress = $state(0);
   let importError = $state('');
 
+  // TOC choice dialog: shown when the document has its own heading structure
+  let showImportChoice = $state(false);
+  let importHeadingCount = $state(0);
+  /** @type {File | null} */
+  let pendingWordFile = $state(null);
+
   function triggerWordImport() {
     importError = '';
     wordFileInput?.click();
@@ -906,23 +912,52 @@ Rules:
   async function handleWordFile(/** @type {Event} */ e) {
     const input = /** @type {HTMLInputElement} */ (e.target);
     const file = input.files?.[0];
+    input.value = '';
     if (!file) return;
     importingWord = true;
     importProgress = 0;
     importError = '';
     try {
       // Dynamic import keeps the heavy docx-preview lib out of the initial bundle
+      const { analyzeDocx } = await import('$lib/utils/docx-chapters.js');
+      const { hasHeadings, headingCount } = await analyzeDocx(file, (p) => { importProgress = p; });
+      importingWord = false;
+
+      if (hasHeadings) {
+        // Let the user decide: follow the document's own outline, or auto-chunk
+        pendingWordFile = file;
+        importHeadingCount = headingCount;
+        showImportChoice = true;
+      } else {
+        // No outline in the document → split into fixed-size sections automatically
+        await runWordImport(file, 'chunks');
+      }
+    } catch (/** @type {any} */ err) {
+      console.error(err);
+      importError = err?.message || 'خطا در پردازش فایل Word';
+      importingWord = false;
+    }
+  }
+
+  /**
+   * @param {File} file
+   * @param {'headings'|'chunks'} mode
+   */
+  async function runWordImport(file, mode) {
+    importingWord = true;
+    importProgress = 0;
+    importError = '';
+    showImportChoice = false;
+    try {
       const { extractChaptersFromDocx } = await import('$lib/utils/docx-chapters.js');
-      const parsed = await extractChaptersFromDocx(file, (p) => { importProgress = p; });
+      const parsed = await extractChaptersFromDocx(file, (p) => { importProgress = p; }, { mode });
       if (!parsed.length) {
         importError = 'هیچ محتوایی در فایل پیدا نشد';
         return;
       }
-      // Create a chapter per parsed heading/section
       for (const ch of parsed) {
         await currentProjectStore.addChapter({ title: ch.title, sourceText: ch.sourceText });
       }
-      // Select the first newly imported chapter
       const fresh = chapters[chapters.length - parsed.length];
       if (fresh) selectChapter(fresh);
     } catch (/** @type {any} */ err) {
@@ -930,7 +965,7 @@ Rules:
       importError = err?.message || 'خطا در پردازش فایل Word';
     } finally {
       importingWord = false;
-      input.value = '';
+      pendingWordFile = null;
     }
   }
 
@@ -1382,13 +1417,14 @@ Rules:
               <div bind:this={sourceScrollEl} onscroll={onSourceScroll} class="flex-1 overflow-y-auto p-3">
                 {#if showDiff && blocks.some(b => b.content.trim())}
                   <!-- In diff mode: show read-only view with sentence-level hover sync -->
-                  <div class="space-y-3">
+                  <!-- Spacing kept in sync with BlockEditor (py-0.5 px-1, no extra gaps) so toggling diff doesn't shift the layout -->
+                  <div>
                     {#each blocks as block (block.id)}
                       {@const contentChanged = block.originalContent !== undefined && block.content !== block.originalContent}
                       {@const srcSents = splitSentences(block.content)}
                       <!-- svelte-ignore a11y_no_static_element_interactions -->
                       <div
-                        class="rounded-lg px-2 py-1.5 transition-colors {hoveredBlockId === block.id ? 'bg-muted/40 ring-1 ring-primary/15' : ''}"
+                        class="rounded py-0.5 px-1 transition-colors {hoveredBlockId === block.id ? 'bg-muted/40 ring-1 ring-primary/15' : ''}"
                         onmouseenter={() => hoveredBlockId = block.id}
                         onmouseleave={() => { hoveredBlockId = ''; hoveredSentenceIndex = -1; }}
                       >
@@ -1407,7 +1443,8 @@ Rules:
                           </p>
                         {:else}
                           <!-- Sentence-wrapped view for hover sync -->
-                          <p class="text-sm leading-relaxed" dir="auto">
+                          <!-- -mx-0.5 cancels the px-0.5 on the first/last sentence span so text aligns with BlockEditor -->
+                          <p class="text-sm leading-relaxed -mx-0.5" dir="auto">
                             {#each srcSents as sent, sIdx}
                               <!-- svelte-ignore a11y_no_static_element_interactions -->
                               <span
@@ -1855,6 +1892,44 @@ Rules:
     {/if}
     <div class="h-1.5 rounded-full bg-muted overflow-hidden">
       <div class="h-full rounded-full bg-primary transition-all duration-300" style="width: {batchTotal > 0 ? Math.round((batchCurrent / batchTotal) * 100) : 0}%"></div>
+    </div>
+  </div>
+{/if}
+
+<!-- Word Import: TOC choice -->
+{#if showImportChoice}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={() => { showImportChoice = false; pendingWordFile = null; }}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="bg-card border rounded-xl p-6 w-full max-w-md mx-4 shadow-xl" onclick={(e) => e.stopPropagation()} dir="rtl">
+      <h3 class="text-lg font-semibold mb-1">فهرست فصل‌ها</h3>
+      <p class="text-xs text-muted-foreground mb-4">
+        این سند Word دارای ساختار عنوان‌بندی (فهرست) با {importHeadingCount} عنوان است. می‌خواهی فصل‌ها چطور ساخته شوند؟
+      </p>
+      <div class="space-y-2">
+        <button onclick={() => pendingWordFile && runWordImport(pendingWordFile, 'headings')}
+          class="w-full text-right px-3 py-3 rounded-lg border border-primary bg-primary/5 hover:bg-primary/10 transition-colors">
+          <div class="font-medium text-sm flex items-center gap-2">
+            <svg class="w-4 h-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
+            استفاده از فهرست خود سند
+          </div>
+          <div class="text-xs text-muted-foreground mt-1 pr-6">هر عنوان سند یک فصل می‌شود (پیشنهادی)</div>
+        </button>
+        <button onclick={() => pendingWordFile && runWordImport(pendingWordFile, 'chunks')}
+          class="w-full text-right px-3 py-3 rounded-lg border border-input hover:bg-muted transition-colors">
+          <div class="font-medium text-sm flex items-center gap-2">
+            <svg class="w-4 h-4 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 3h7v7H3z"/><path d="M14 3h7v7h-7z"/><path d="M14 14h7v7h-7z"/><path d="M3 14h7v7H3z"/></svg>
+            تقسیم خودکار به بخش‌های مساوی
+          </div>
+          <div class="text-xs text-muted-foreground mt-1 pr-6">نادیده‌گرفتن عنوان‌ها و تقسیم متن به بخش‌های هم‌اندازه</div>
+        </button>
+      </div>
+      <div class="flex justify-end mt-4">
+        <button onclick={() => { showImportChoice = false; pendingWordFile = null; }}
+          class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">انصراف</button>
+      </div>
     </div>
   </div>
 {/if}
