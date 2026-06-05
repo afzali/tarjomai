@@ -28,7 +28,7 @@
 </script>
 
 <svelte:head>
-	<title>ترجمای - ابزار ترجمه هوشمند</title>
+	<title>ویرای - ابزار ترجمه هوشمند</title>
 	<meta name="description" content="ابزار ترجمه و مقایسه هوشمند متون با هوش مصنوعی" />
 </svelte:head>
 

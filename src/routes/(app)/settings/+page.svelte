@@ -235,7 +235,7 @@
 <div class="container mx-auto py-8 px-4 max-w-2xl">
 	<div class="mb-8">
 		<h1 class="text-3xl font-bold">تنظیمات</h1>
-		<p class="text-muted-foreground mt-1">پیکربندی برنامه ترجمای</p>
+		<p class="text-muted-foreground mt-1">پیکربندی برنامه ویرای</p>
 	</div>
 
 	<div class="space-y-6">

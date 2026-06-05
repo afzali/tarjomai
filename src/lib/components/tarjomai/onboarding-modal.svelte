@@ -41,7 +41,7 @@
 <Dialog open={true}>
 	<DialogContent class="sm:max-w-md">
 		<DialogHeader>
-			<DialogTitle>به ترجمای خوش آمدید!</DialogTitle>
+			<DialogTitle>به ویرای خوش آمدید!</DialogTitle>
 			<DialogDescription>
 				برای استفاده از قابلیت‌های ترجمه، لطفاً کلید API خود را وارد کنید
 			</DialogDescription>
