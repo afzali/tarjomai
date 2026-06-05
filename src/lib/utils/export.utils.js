@@ -174,20 +174,20 @@ export const exportUtils = {
       html += `<h2>${chapter.title}</h2>`;
 
       if (includeSource && chapter.sourceText) {
-        html += `<div class="source-section">`;
+        html += `<div class="source-section" dir="auto">`;
         html += `<h3>متن اصلی</h3>`;
         chapter.sourceText.split('\n').forEach(line => {
-          html += `<p>${line || '&nbsp;'}</p>`;
+          html += `<p dir="auto">${line || '&nbsp;'}</p>`;
         });
         html += `</div>`;
       }
 
       const output = getFinalOutputText(chapter, layer);
       if (output) {
-        html += `<div class="output-section">`;
+        html += `<div class="output-section" dir="auto">`;
         if (includeSource) html += `<h3>${outputLabel}</h3>`;
         output.split('\n').forEach(line => {
-          html += `<p>${line || '&nbsp;'}</p>`;
+          html += `<p dir="auto">${line || '&nbsp;'}</p>`;
         });
         html += `</div>`;
       }

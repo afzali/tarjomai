@@ -339,6 +339,38 @@
   }
 
   /**
+   * Begin inline editing of a block's translation. Editing isn't possible while
+   * the diff view is on (it would clash with the highlight markup), so we turn
+   * diff off automatically — this makes "edit" always work no matter the mode.
+   * @param {Block} block
+   */
+  function startEdit(block) {
+    if (translating) return;
+    if (showDiff) showDiff = false;
+    const i = blocks.findIndex(b => b.id === block.id);
+    if (i === -1) return;
+    blocks[i] = { ...blocks[i], _editing: true, _editVal: block.editedTranslation || blockTranslationText(block) };
+    blocks = [...blocks];
+  }
+
+  /** Save the current inline edit for a block. @param {Block} block */
+  async function saveEdit(block) {
+    const i = blocks.findIndex(b => b.id === block.id);
+    if (i === -1) return;
+    blocks[i] = { ...blocks[i], status: 'edited', editedTranslation: block._editVal || '', _editing: false, _editVal: undefined };
+    blocks = [...blocks];
+    await saveBlocks();
+  }
+
+  /** Cancel the current inline edit for a block. @param {Block} block */
+  function cancelEdit(block) {
+    const i = blocks.findIndex(b => b.id === block.id);
+    if (i === -1) return;
+    blocks[i] = { ...blocks[i], _editing: false, _editVal: undefined };
+    blocks = [...blocks];
+  }
+
+  /**
    * Save a snapshot of original content and translation after translation completes.
    * @param {Block} b
    * @returns {Block}
@@ -351,17 +383,6 @@
       return { ...b, originalContent: currentContent, originalTranslation: currentTranslation };
     }
     return b;
-  }
-
-  /**
-   * Check if content or translation has been modified since last snapshot.
-   * @param {Block} b
-   * @returns {{ contentChanged: boolean, translationChanged: boolean, hasChanges: boolean }}
-   */
-  function checkModifications(b) {
-    const contentChanged = b.originalContent !== undefined ? b.content !== b.originalContent : false;
-    const translationChanged = b.originalTranslation !== undefined ? blockTranslationText(b) !== b.originalTranslation : false;
-    return { contentChanged, translationChanged, hasChanges: contentChanged || translationChanged };
   }
 
   /**
@@ -870,6 +891,128 @@ Rules:
     showNewChapterModal = false;
   }
 
+  // --- Word import ---
+  /** @type {HTMLInputElement | null} */
+  let wordFileInput = $state(null);
+  let importingWord = $state(false);
+  let importProgress = $state(0);
+  let importError = $state('');
+
+  function triggerWordImport() {
+    importError = '';
+    wordFileInput?.click();
+  }
+
+  async function handleWordFile(/** @type {Event} */ e) {
+    const input = /** @type {HTMLInputElement} */ (e.target);
+    const file = input.files?.[0];
+    if (!file) return;
+    importingWord = true;
+    importProgress = 0;
+    importError = '';
+    try {
+      // Dynamic import keeps the heavy docx-preview lib out of the initial bundle
+      const { extractChaptersFromDocx } = await import('$lib/utils/docx-chapters.js');
+      const parsed = await extractChaptersFromDocx(file, (p) => { importProgress = p; });
+      if (!parsed.length) {
+        importError = 'هیچ محتوایی در فایل پیدا نشد';
+        return;
+      }
+      // Create a chapter per parsed heading/section
+      for (const ch of parsed) {
+        await currentProjectStore.addChapter({ title: ch.title, sourceText: ch.sourceText });
+      }
+      // Select the first newly imported chapter
+      const fresh = chapters[chapters.length - parsed.length];
+      if (fresh) selectChapter(fresh);
+    } catch (/** @type {any} */ err) {
+      console.error(err);
+      importError = err?.message || 'خطا در پردازش فایل Word';
+    } finally {
+      importingWord = false;
+      input.value = '';
+    }
+  }
+
+  /**
+   * Translation status for a chapter, derived from its persisted blocks.
+   * @param {any} chapter
+   * @returns {'none'|'partial'|'done'}
+   */
+  function chapterStatus(chapter) {
+    const chBlocks = chapter?.blocks;
+    if (!chBlocks || chBlocks.length === 0) {
+      // Fall back to legacy outputText
+      return chapter?.outputText?.trim() ? 'done' : 'none';
+    }
+    let translatable = 0;
+    let translated = 0;
+    for (const b of chBlocks) {
+      if (!b.content?.trim()) continue;
+      translatable++;
+      const hasL1 = b.sentences?.some((/** @type {any} */ s) => s.status === 'done');
+      const hasEdit = !!b.editedTranslation;
+      const hasL2 = !!b.paragraphTranslation;
+      if (hasL1 || hasEdit || hasL2) translated++;
+    }
+    if (translated === 0) return 'none';
+    if (translated < translatable) return 'partial';
+    return 'done';
+  }
+
+  // --- Batch translation across chapters ---
+  let showBatchModal = $state(false);
+  let batchFrom = $state(1);
+  let batchTo = $state(1);
+  let batchRunning = $state(false);
+  let batchCurrent = $state(0);
+  let batchTotal = $state(0);
+  let batchCurrentTitle = $state('');
+
+  // Names of the from/to chapters and the count in the selected range (for the modal)
+  const batchFromTitle = $derived(chapters[Math.max(1, Math.min(batchFrom, chapters.length)) - 1]?.title || '');
+  const batchToTitle = $derived(chapters[Math.max(1, Math.min(batchTo, chapters.length)) - 1]?.title || '');
+  const batchSelectedChapters = $derived(
+    chapters.slice(
+      Math.max(1, Math.min(batchFrom, batchTo)) - 1,
+      Math.min(chapters.length, Math.max(batchFrom, batchTo))
+    )
+  );
+
+  function openBatchModal() {
+    batchFrom = 1;
+    batchTo = chapters.length;
+    showBatchModal = true;
+  }
+
+  function stopBatch() { abortController?.abort(); batchRunning = false; }
+
+  async function runBatchTranslation() {
+    if (!settings?.openRouterApiKey || !translationModel) { showBatchModal = false; return; }
+    const from = Math.max(1, Math.min(batchFrom, chapters.length));
+    const to = Math.max(from, Math.min(batchTo, chapters.length));
+    const slice = chapters.slice(from - 1, to);
+    showBatchModal = false;
+    batchRunning = true;
+    batchTotal = slice.length;
+    batchCurrent = 0;
+
+    for (const ch of slice) {
+      if (!batchRunning) break;
+      batchCurrent++;
+      batchCurrentTitle = ch.title;
+      // Switch the workspace to this chapter so its blocks render/save correctly
+      selectChapter(ch);
+      await tick();
+      // Translate all blocks of this chapter in comparative mode
+      if (blocks.length && blocks.some(b => b.content.trim())) {
+        await translateAllBlocks();
+      }
+    }
+    batchRunning = false;
+    batchCurrentTitle = '';
+  }
+
   async function deleteChapter(/** @type {any} */ _chapter) {
     if (!confirm(`حذف فصل «${_chapter.title}»؟`)) return;
     await currentProjectStore.deleteChapter(_chapter.id);
@@ -960,14 +1103,21 @@ Rules:
       </a>
     </div>
     <div class="flex-1 overflow-y-auto p-2 space-y-0.5">
-      {#each chapters as chapter (chapter.id)}
+      {#each chapters as chapter, chapterIndex (chapter.id)}
+        {@const st = chapterStatus(chapter)}
         <div class="group flex items-center gap-1 rounded-lg {selectedChapter?.id === chapter.id ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}">
           <button onclick={() => selectChapter(chapter)} class="flex-1 text-right px-3 py-2 text-sm truncate">
-            <div class="flex items-center gap-1">
-              <span class="truncate">{chapter.title}</span>
-              {#if chapter.status === 'completed'}
-                <svg class="w-3 h-3 shrink-0 {selectedChapter?.id === chapter.id ? 'text-primary-foreground/70' : 'text-green-500'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+            <div class="flex items-center gap-1.5">
+              <!-- Translation status dot -->
+              {#if st === 'done'}
+                <span class="w-2 h-2 rounded-full shrink-0 bg-green-500" title="ترجمه کامل"></span>
+              {:else if st === 'partial'}
+                <span class="w-2 h-2 rounded-full shrink-0 bg-amber-500" title="ترجمه ناقص"></span>
+              {:else}
+                <span class="w-2 h-2 rounded-full shrink-0 border border-muted-foreground/40 {selectedChapter?.id === chapter.id ? 'border-primary-foreground/50' : ''}" title="ترجمه‌نشده"></span>
               {/if}
+              <span class="text-[11px] tabular-nums shrink-0 {selectedChapter?.id === chapter.id ? 'text-primary-foreground/60' : 'text-muted-foreground'}">{chapterIndex + 1}.</span>
+              <span class="truncate">{chapter.title}</span>
             </div>
           </button>
           <button onclick={() => deleteChapter(chapter)} title="حذف فصل"
@@ -983,6 +1133,21 @@ Rules:
         <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
         فصل جدید
       </button>
+      <!-- Word import -->
+      <input bind:this={wordFileInput} type="file" accept=".docx" class="hidden" onchange={handleWordFile} />
+      <button onclick={triggerWordImport} disabled={importingWord}
+        class="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs border border-input bg-background hover:bg-muted transition-colors disabled:opacity-50">
+        {#if importingWord}
+          <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+          در حال ایمپورت {importProgress}٪
+        {:else}
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
+          ایمپورت از Word
+        {/if}
+      </button>
+      {#if importError}
+        <p class="text-[11px] text-destructive text-center px-1">{importError}</p>
+      {/if}
       <a href="/projects/{projectId}/rules" 
         class="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs border border-input bg-background hover:bg-muted transition-colors">
         <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.83 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>
@@ -1000,6 +1165,16 @@ Rules:
         <button onclick={skipSetup} class="text-xs text-muted-foreground hover:text-foreground">رد شدن</button>
       {/if}
       <div class="flex-1"></div>
+
+      <!-- Batch translate -->
+      {#if chapters.length > 0}
+        <button onclick={openBatchModal} disabled={batchRunning || translating}
+          class="inline-flex items-center gap-1 h-8 px-2.5 rounded-md border border-input bg-background text-xs hover:bg-muted transition-colors disabled:opacity-50"
+          title="ترجمه دسته‌ای فصل‌ها">
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 3h7v7H3z"/><path d="M14 3h7v7h-7z"/><path d="M14 14h7v7h-7z"/><path d="M3 14h7v7H3z"/></svg>
+          ترجمه دسته‌ای
+        </button>
+      {/if}
 
       <!-- Glossary link -->
       <a href="/projects/{projectId}/glossary"
@@ -1318,79 +1493,52 @@ Rules:
                       </div>
                     {/if}
 
-                    <!-- Modification indicator (shows if content or translation changed since last snapshot) -->
-                    {#if !translating}
-                      {@const mods = checkModifications(block)}
-                      {#if mods.hasChanges || block.outOfSync}
-                      <div class="flex items-center gap-2 mb-1.5 px-1 py-0.5 rounded {block.outOfSync ? 'bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800' : 'bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800'}">
-                        {#if mods.contentChanged || block.outOfSync}
-                          <span class="text-[10px] text-amber-700 dark:text-amber-300 flex items-center gap-1" title="متن اصلی نسبت به آخرین ترجمه تغییر کرده">
-                            <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                            اصل تغییر کرد
-                          </span>
-                        {/if}
-                        {#if mods.translationChanged}
-                          <span class="text-[10px] text-purple-700 dark:text-purple-300 flex items-center gap-1" title="ترجمه دستی ویرایش شده">
-                            <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                            ترجمه ویرایش شد
-                          </span>
-                        {/if}
+                    <!-- Out-of-sync indicator: source text changed after translation -->
+                    {#if !translating && block.outOfSync}
+                      <div class="flex items-center gap-2 mb-1.5 px-1 py-0.5 rounded bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
+                        <span class="text-[10px] text-amber-700 dark:text-amber-300 flex items-center gap-1" title="متن اصلی نسبت به آخرین ترجمه تغییر کرده">
+                          <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                          اصل تغییر کرد
+                        </span>
                         <div class="flex items-center gap-1 mr-auto">
-                          {#if block.outOfSync}
-                            <button onclick={() => retranslateSingleBlock(block)}
-                              class="text-[10px] px-2 py-0.5 rounded bg-amber-500 text-white hover:bg-amber-600 transition-colors" title="ترجمه مجدد با توجه به تغییرات">
-                              ترجمه مجدد
-                            </button>
-                          {/if}
-                          <button onclick={() => { blocks = blocks.map(b => b.id === block.id ? { ...saveSnapshot(b), outOfSync: false } : b); saveBlocks(); }}
-                            class="text-[10px] px-2 py-0.5 rounded bg-green-600 text-white hover:bg-green-700 transition-colors" title="تایید دستی: این نسخه را به عنوان باقی و منبع نهایی ثبت کن">
-                            تایید دستی
+                          <button onclick={() => retranslateSingleBlock(block)}
+                            class="text-[10px] px-2 py-0.5 rounded bg-amber-500 text-white hover:bg-amber-600 transition-colors" title="ترجمه مجدد با توجه به تغییرات">
+                            ترجمه مجدد
                           </button>
                         </div>
                       </div>
-                      {/if}
                     {/if}
 
-                    <!-- Edited mode -->
-                    {#if block.status === 'edited' && !showDiff}
+                    <!-- Edited mode (always shows the edited text; editing auto-disables diff) -->
+                    {#if block.status === 'edited'}
                       <!-- svelte-ignore a11y_no_static_element_interactions -->
-                      <div ondblclick={() => {
-                          if (translating || showDiff) return;
-                          const i = blocks.findIndex(b => b.id === block.id);
-                          blocks[i] = { ...blocks[i], _editing: true, _editVal: block.editedTranslation || blockTranslationText(block) };
-                          blocks = [...blocks];
-                        }}>
+                      <div ondblclick={() => startEdit(block)}>
 
                         {#if block._editing}
                           <div class="flex items-center gap-1.5 mb-1">
-                            <button onclick={async () => {
-                                const i = blocks.findIndex(b => b.id === block.id);
-                                blocks[i] = { ...blocks[i], status: 'edited', editedTranslation: block._editVal || '', _editing: false, _editVal: undefined };
-                                blocks = [...blocks]; await saveBlocks();
-                              }} class="h-6 px-2.5 rounded bg-primary text-primary-foreground text-xs hover:bg-primary/90 transition-colors">ذخیره</button>
-                            <button onclick={() => {
-                                const i = blocks.findIndex(b => b.id === block.id);
-                                blocks[i] = { ...blocks[i], _editing: false, _editVal: undefined }; blocks = [...blocks];
-                              }} class="h-6 px-2.5 rounded border border-input bg-background text-xs hover:bg-muted transition-colors">لغو</button>
+                            <button onclick={() => saveEdit(block)} class="h-6 px-2.5 rounded bg-primary text-primary-foreground text-xs hover:bg-primary/90 transition-colors">ذخیره</button>
+                            <button onclick={() => cancelEdit(block)} class="h-6 px-2.5 rounded border border-input bg-background text-xs hover:bg-muted transition-colors">لغو</button>
                           </div>
                           <!-- svelte-ignore a11y_no_static_element_interactions -->
                           <div contenteditable="true" dir="auto"
-                            class="text-sm leading-relaxed whitespace-pre-wrap outline-none min-h-[2rem] caret-primary"
+                            class="text-sm leading-relaxed whitespace-pre-wrap outline-none min-h-[2rem] caret-primary border border-primary/30 rounded p-1.5 bg-background"
                             oninput={(e) => { const i = blocks.findIndex(b => b.id === block.id); blocks[i] = { ...blocks[i], _editVal: /** @type {any} */(e.target)?.textContent ?? '' }; }}
                           >{block.editedTranslation || blockTranslationText(block)}</div>
                         {:else}
-                          {#if !translating && !showDiff}
-                            <button onclick={() => { const i = blocks.findIndex(b => b.id === block.id); blocks[i] = { ...blocks[i], _editing: true, _editVal: block.editedTranslation || blockTranslationText(block) }; blocks = [...blocks]; }}
+                          {#if !translating}
+                            <button onclick={() => startEdit(block)}
                               class="absolute top-1 left-1 p-1 rounded opacity-0 group-hover/out:opacity-100 transition-opacity text-muted-foreground hover:text-foreground hover:bg-muted"
                               title="ویرایش" aria-label="ویرایش">
                               <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
                             </button>
                           {/if}
-                          {#if showDiff}
-                            <div class="text-xs text-muted-foreground mb-1 px-1 py-0.5 rounded bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800">ویرایش دستی</div>
-                          {/if}
+                          <!-- Tag that this block was hand-edited -->
+                          <div class="text-[10px] text-blue-600 dark:text-blue-400 mb-1 flex items-center gap-1">
+                            <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                            ویرایش دستی
+                          </div>
                           {#if showDiff && block.originalTranslation !== undefined && block.originalTranslation !== (block.editedTranslation || '')}
-                            <!-- Word-level diff view -->
+                            <!-- Word-level diff between the model output and your edit -->
                             <p class="text-sm leading-relaxed whitespace-pre-wrap" dir="auto">
                               {#each wordDiff(block.originalTranslation, block.editedTranslation || '') as seg}
                                 {#if seg.type === 'equal'}<span>{seg.text}</span>
@@ -1407,9 +1555,9 @@ Rules:
 
                     <!-- Sentence-by-sentence view -->
                     {:else if hasSentences}
-                      <!-- Hover buttons (hidden in diff mode) -->
+                      <!-- Hover buttons -->
                       {#if !translating && !block.outOfSync && !showDiff}
-                        <button onclick={() => { const i = blocks.findIndex(b => b.id === block.id); blocks[i] = { ...blocks[i], _editing: true, _editVal: blockTranslationText(block) }; blocks = [...blocks]; }}
+                        <button onclick={() => startEdit(block)}
                           class="absolute top-1 left-1 p-1 rounded opacity-0 group-hover/out:opacity-100 transition-opacity text-muted-foreground hover:text-foreground hover:bg-muted"
                           title="ویرایش" aria-label="ویرایش">
                           <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
@@ -1421,26 +1569,21 @@ Rules:
                         </button>
                       {/if}
 
-                      <!-- Inline edit when dblclicked (disabled in diff mode) -->
-                      {#if block._editing && !showDiff}
+                      <!-- Inline edit when dblclicked (startEdit auto-disables diff) -->
+                      {#if block._editing}
                         <div class="flex items-center gap-1.5 mb-1">
-                          <button onclick={async () => {
-                              const i = blocks.findIndex(b => b.id === block.id);
-                              blocks[i] = { ...blocks[i], status: 'edited', editedTranslation: block._editVal || '', _editing: false, _editVal: undefined };
-                              blocks = [...blocks]; await saveBlocks();
-                            }} class="h-6 px-2.5 rounded bg-primary text-primary-foreground text-xs hover:bg-primary/90 transition-colors">ذخیره</button>
-                          <button onclick={() => { const i = blocks.findIndex(b => b.id === block.id); blocks[i] = { ...blocks[i], _editing: false, _editVal: undefined }; blocks = [...blocks]; }}
-                            class="h-6 px-2.5 rounded border border-input bg-background text-xs hover:bg-muted transition-colors">لغو</button>
+                          <button onclick={() => saveEdit(block)} class="h-6 px-2.5 rounded bg-primary text-primary-foreground text-xs hover:bg-primary/90 transition-colors">ذخیره</button>
+                          <button onclick={() => cancelEdit(block)} class="h-6 px-2.5 rounded border border-input bg-background text-xs hover:bg-muted transition-colors">لغو</button>
                         </div>
                         <!-- svelte-ignore a11y_no_static_element_interactions -->
                         <div contenteditable="true" dir="auto"
-                          class="text-sm leading-relaxed whitespace-pre-wrap outline-none min-h-[2rem] caret-primary"
+                          class="text-sm leading-relaxed whitespace-pre-wrap outline-none min-h-[2rem] caret-primary border border-primary/30 rounded p-1.5 bg-background"
                           oninput={(e) => { const i = blocks.findIndex(b => b.id === block.id); blocks[i] = { ...blocks[i], _editVal: /** @type {any} */(e.target)?.textContent ?? '' }; }}
                         >{blockTranslationText(block)}</div>
                       {:else}
                         <!-- svelte-ignore a11y_no_static_element_interactions -->
                         <p class="text-sm leading-relaxed" dir="auto"
-                          ondblclick={() => { if (translating || showDiff) return; const i = blocks.findIndex(b => b.id === block.id); blocks[i] = { ...blocks[i], _editing: true, _editVal: blockTranslationText(block) }; blocks = [...blocks]; }}>
+                          ondblclick={() => startEdit(block)}>
                           {#each block.sentences as sent, sIdx (sent.id)}
                             {#if sent.status === 'translating'}
                               <span class="inline-block animate-pulse bg-muted rounded px-1 text-transparent text-xs select-none">░░░░░░░░░░░░</span>{' '}
@@ -1639,6 +1782,79 @@ Rules:
         <button onclick={addChapter} disabled={!newChapterTitle.trim()}
           class="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-40 transition-colors">ایجاد</button>
       </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Batch Translation Modal -->
+{#if showBatchModal}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onclick={() => showBatchModal = false}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="bg-card border rounded-xl p-6 w-full max-w-sm mx-4 shadow-xl" onclick={(e) => e.stopPropagation()}>
+      <h3 class="text-lg font-semibold mb-1" dir="rtl">ترجمه دسته‌ای فصل‌ها</h3>
+      <p class="text-xs text-muted-foreground mb-4" dir="rtl">
+        بازه‌ی فصل‌هایی که می‌خواهی ترجمه‌ی تطبیقی روی آن‌ها اجرا شود را مشخص کن. مدل: <span class="font-medium text-foreground">{translationModelLabel}</span>
+      </p>
+      <div class="grid grid-cols-2 gap-3" dir="rtl">
+        <div class="space-y-1">
+          <label for="batch-from" class="text-xs font-medium">از فصل</label>
+          <input id="batch-from" type="number" min="1" max={chapters.length} bind:value={batchFrom}
+            class="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"/>
+          {#if batchFromTitle}
+            <p class="text-[11px] text-muted-foreground truncate" title={batchFromTitle}>{batchFromTitle}</p>
+          {/if}
+        </div>
+        <div class="space-y-1">
+          <label for="batch-to" class="text-xs font-medium">تا فصل</label>
+          <input id="batch-to" type="number" min="1" max={chapters.length} bind:value={batchTo}
+            class="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"/>
+          {#if batchToTitle}
+            <p class="text-[11px] text-muted-foreground truncate" title={batchToTitle}>{batchToTitle}</p>
+          {/if}
+        </div>
+      </div>
+
+      <!-- Preview of selected chapters -->
+      {#if batchSelectedChapters.length > 0}
+        <div class="mt-3 rounded-lg border bg-muted/30 p-2 max-h-32 overflow-y-auto" dir="rtl">
+          <p class="text-[11px] text-muted-foreground mb-1">{batchSelectedChapters.length} فصل انتخاب شده:</p>
+          <ol class="space-y-0.5">
+            {#each batchSelectedChapters as ch}
+              {@const num = chapters.indexOf(ch) + 1}
+              <li class="text-xs flex items-center gap-1.5 truncate">
+                <span class="tabular-nums text-muted-foreground shrink-0">{num}.</span>
+                <span class="truncate">{ch.title}</span>
+              </li>
+            {/each}
+          </ol>
+        </div>
+      {/if}
+
+      <p class="text-[11px] text-muted-foreground mt-2" dir="rtl">مجموع فصل‌ها: {chapters.length}</p>
+      <div class="flex gap-2 justify-end mt-4" dir="rtl">
+        <button onclick={() => showBatchModal = false} class="h-9 px-4 rounded-md border border-input bg-background text-sm hover:bg-muted transition-colors">انصراف</button>
+        <button onclick={runBatchTranslation} disabled={!translationModel || chapters.length === 0}
+          class="h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 disabled:opacity-40 transition-colors">شروع ترجمه</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Batch progress banner -->
+{#if batchRunning}
+  <div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-card border rounded-xl shadow-xl px-4 py-3 w-80" dir="rtl">
+    <div class="flex items-center justify-between mb-1.5">
+      <span class="text-xs font-medium">ترجمه دسته‌ای — فصل {batchCurrent}/{batchTotal}</span>
+      <button onclick={stopBatch} class="text-xs text-destructive hover:underline">توقف</button>
+    </div>
+    {#if batchCurrentTitle}
+      <p class="text-[11px] text-muted-foreground truncate mb-1.5" title={batchCurrentTitle}>در حال ترجمه: {batchCurrentTitle}</p>
+    {/if}
+    <div class="h-1.5 rounded-full bg-muted overflow-hidden">
+      <div class="h-full rounded-full bg-primary transition-all duration-300" style="width: {batchTotal > 0 ? Math.round((batchCurrent / batchTotal) * 100) : 0}%"></div>
     </div>
   </div>
 {/if}
@@ -1863,7 +2079,9 @@ Rules:
         <div class="flex items-center justify-between py-2 border-t">
           <span class="text-sm">شامل متن اصلی</span>
           <button onclick={() => exportIncludeSource = !exportIncludeSource}
-            class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {exportIncludeSource ? 'bg-primary' : 'bg-muted-foreground/30'}">
+            role="switch" aria-checked={exportIncludeSource} aria-label="شامل متن اصلی"
+            dir="ltr"
+            class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors {exportIncludeSource ? 'bg-primary' : 'bg-muted-foreground/30'}">
             <span class="inline-block h-4 w-4 rounded-full bg-white shadow transition-transform {exportIncludeSource ? 'translate-x-4' : 'translate-x-0.5'}"></span>
           </button>
         </div>
