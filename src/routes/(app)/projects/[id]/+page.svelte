@@ -905,11 +905,22 @@ Rules:
   /** @type {'layer1'|'layer2'|'both'} */
   let exportLayer = $state('layer1');
   let exportIncludeSource = $state(false);
+  // Whether to print each section's title (the sidebar/menu label) inside the
+  // output. Off by default because these headings are usually untranslated.
+  let exportIncludeHeadings = $state(false);
+  /** @type {'styled'|'plain'} */
+  let exportStyle = $state('styled');
 
   function handleExport(/** @type {string} */ format) {
     if (!project || !chapters.length) return;
     const layerLabel = exportLayer === 'layer1' ? 'ترجمه تطبیقی' : exportLayer === 'layer2' ? 'ترجمه روان' : 'هر دو';
-    const opts = { outputLabel: layerLabel, includeSource: exportIncludeSource, layer: exportLayer };
+    const opts = {
+      outputLabel: layerLabel,
+      includeSource: exportIncludeSource,
+      layer: exportLayer,
+      includeHeadings: exportIncludeHeadings,
+      style: exportStyle
+    };
     if (format === 'word') {
       exportUtils.exportToWord(project, chapters, opts);
     } else if (format === 'markdown') {
@@ -2370,6 +2381,39 @@ Rules:
             class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors {exportIncludeSource ? 'bg-primary' : 'bg-muted-foreground/30'}">
             <span class="inline-block h-4 w-4 rounded-full bg-white shadow transition-transform {exportIncludeSource ? 'translate-x-4' : 'translate-x-0.5'}"></span>
           </button>
+        </div>
+
+        <!-- Include section titles (sidebar/menu labels) -->
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="flex items-center justify-between py-2 border-t">
+          <div>
+            <span class="text-sm block">نمایش عنوان بخش‌ها در متن</span>
+            <span class="text-xs text-muted-foreground">عنوان فصل‌های منو (معمولاً ترجمه‌نشده)</span>
+          </div>
+          <button onclick={() => exportIncludeHeadings = !exportIncludeHeadings}
+            role="switch" aria-checked={exportIncludeHeadings} aria-label="نمایش عنوان بخش‌ها در متن"
+            dir="ltr"
+            class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors {exportIncludeHeadings ? 'bg-primary' : 'bg-muted-foreground/30'}">
+            <span class="inline-block h-4 w-4 rounded-full bg-white shadow transition-transform {exportIncludeHeadings ? 'translate-x-4' : 'translate-x-0.5'}"></span>
+          </button>
+        </div>
+
+        <!-- Output style -->
+        <div class="space-y-2 py-2 border-t">
+          <span class="text-sm font-medium block">قالب خروجی</span>
+          <div class="grid grid-cols-2 gap-1.5">
+            <button onclick={() => exportStyle = 'styled'}
+              class="flex flex-col items-start gap-0.5 px-3 py-2 rounded-lg border text-sm transition-colors {exportStyle === 'styled' ? 'border-primary bg-primary/5 text-primary' : 'border-input hover:bg-muted'}">
+              <span class="font-medium">با قالب‌بندی</span>
+              <span class="text-xs text-muted-foreground">عنوان‌ها و جداکننده‌ها</span>
+            </button>
+            <button onclick={() => exportStyle = 'plain'}
+              class="flex flex-col items-start gap-0.5 px-3 py-2 rounded-lg border text-sm transition-colors {exportStyle === 'plain' ? 'border-primary bg-primary/5 text-primary' : 'border-input hover:bg-muted'}">
+              <span class="font-medium">متن ساده</span>
+              <span class="text-xs text-muted-foreground">بدون عنوان و استایل</span>
+            </button>
+          </div>
         </div>
 
       </div>
