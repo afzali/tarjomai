@@ -13,6 +13,7 @@
   import { Textarea } from '$lib/components/ui-rtl/textarea';
   import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '$lib/components/ui-rtl/card';
   import * as Select from '$lib/components/ui-rtl/select';
+  import * as Accordion from '$lib/components/ui-rtl/accordion';
 
   // Step 0: operation type selection
   // Step 1: project details + setup options
@@ -34,21 +35,62 @@
   const allOperations = getAllOperations();
 
   const defaultLanguageItems = [
+    { value: 'ar', label: 'عربی' },
     { value: 'en', label: 'انگلیسی' },
     { value: 'fa', label: 'فارسی' },
-    { value: 'ar', label: 'عربی' },
+    { value: 'nl', label: 'هلندی' },
     { value: 'de', label: 'آلمانی' },
     { value: 'fr', label: 'فرانسوی' },
     { value: 'es', label: 'اسپانیایی' },
     { value: 'it', label: 'ایتالیایی' },
+    { value: 'pt', label: 'پرتغالی' },
     { value: 'ru', label: 'روسی' },
     { value: 'zh', label: 'چینی' },
     { value: 'ja', label: 'ژاپنی' },
-    { value: 'tr', label: 'ترکی' }
+    { value: 'tr', label: 'ترکی' },
+    { value: 'ko', label: 'کره‌ای' },
+    { value: 'hi', label: 'هندی' },
+    { value: 'ur', label: 'اردو' },
+    { value: 'id', label: 'اندونزیایی' },
+    { value: 'ms', label: 'مالایی' },
+    { value: 'th', label: 'تایلندی' },
+    { value: 'vi', label: 'ویتنامی' },
+    { value: 'pl', label: 'لهستانی' },
+    { value: 'uk', label: 'اکراینی' },
+    { value: 'cs', label: 'چک' },
+    { value: 'hu', label: 'مجارستانی' },
+    { value: 'ro', label: 'رومانیایی' },
+    { value: 'sv', label: 'سوئدی' },
+    { value: 'no', label: 'نروژی' },
+    { value: 'da', label: 'دانمارکی' },
+    { value: 'fi', label: 'فنلاندی' },
+    { value: 'el', label: 'یونانی' },
+    { value: 'he', label: 'عبری' }
   ];
 
   let customLanguageItems = $state([]);
   const languageItems = $derived([...defaultLanguageItems, ...customLanguageItems]);
+
+  let customLangCode = $state('');
+  let customLangLabel = $state('');
+
+  async function addCustomLanguage() {
+    const code = customLangCode.trim().toLowerCase();
+    const label = customLangLabel.trim();
+    if (!code || !label) return;
+    if (languageItems.some(l => l.value === code)) return;
+
+    const newItem = { value: code, label };
+    const updated = [...customLanguageItems, newItem];
+    customLanguageItems = updated;
+    customLangCode = '';
+    customLangLabel = '';
+
+    const settings = await settingsStore.load();
+    if (settings) {
+      await settingsStore.save({ ...settings, customLanguages: updated });
+    }
+  }
 
   const sourceLabel = $derived(languageItems.find(l => l.value === sourceLanguage)?.label ?? 'انتخاب زبان');
   const targetLabel = $derived(languageItems.find(l => l.value === targetLanguage)?.label ?? 'انتخاب زبان');
@@ -212,6 +254,40 @@
             </Select.Root>
           </div>
         {/if}
+
+        <Accordion.Root type="single" collapsible class="w-full">
+          <Accordion.Item value="custom-lang" class="border rounded-lg bg-muted/30">
+            <Accordion.Trigger class="px-4 py-3 hover:no-underline text-sm font-medium">
+              افزودن زبان دلخواه (اختیاری)
+            </Accordion.Trigger>
+            <Accordion.Content>
+              <div class="px-4 pb-4 space-y-3">
+                <div class="grid grid-cols-2 gap-3">
+                  <div class="space-y-1.5">
+                    <Label class="text-xs text-muted-foreground">کد زبان</Label>
+                    <Input bind:value={customLangCode} placeholder="مثلاً nl" maxlength="10" />
+                  </div>
+                  <div class="space-y-1.5">
+                    <Label class="text-xs text-muted-foreground">نام زبان</Label>
+                    <Input bind:value={customLangLabel} placeholder="مثلاً هلندی" />
+                  </div>
+                </div>
+                <Button type="button" variant="outline" size="sm" onclick={addCustomLanguage} disabled={!customLangCode.trim() || !customLangLabel.trim()}>
+                  افزودن به لیست
+                </Button>
+                {#if customLanguageItems.length}
+                  <div class="flex flex-wrap gap-2 text-xs">
+                    {#each customLanguageItems as item (item.value)}
+                      <span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-background border">
+                        {item.label} <span class="text-muted-foreground">({item.value})</span>
+                      </span>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            </Accordion.Content>
+          </Accordion.Item>
+        </Accordion.Root>
       </CardContent>
     </Card>
 

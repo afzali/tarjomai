@@ -241,7 +241,7 @@ export const exportUtils = {
         html += `<div class="source-section" dir="auto">`;
         if (!plain) html += `<h3>متن اصلی</h3>`;
         chapter.sourceText.split('\n').forEach(line => {
-          html += `<p dir="auto">${line || '&nbsp;'}</p>`;
+          if (line.trim()) html += `<p dir="auto">${line}</p>`;
         });
         html += `</div>`;
       }
@@ -251,7 +251,7 @@ export const exportUtils = {
         html += `<div class="output-section" dir="auto">`;
         if (!plain && includeSource) html += `<h3>${outputLabel}</h3>`;
         output.split('\n').forEach(line => {
-          html += `<p dir="auto">${line || '&nbsp;'}</p>`;
+          if (line.trim()) html += `<p dir="auto">${line}</p>`;
         });
         html += `</div>`;
       }
