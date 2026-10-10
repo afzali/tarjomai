@@ -130,6 +130,21 @@ db.version(8).stores({
   modelCache: '++id'
 });
 
+// v9: add reviewRuns — persisted structured chapter reviews ("بررسی کلی"),
+// with their parts, issues and per-issue status (applied / rejected / ...).
+db.version(9).stores({
+  settings: '++id',
+  projects: '++id, title, createdAt, updatedAt, setupStep, operationType, folderId',
+  chapters: '++id, projectId, order, status',
+  operationConfig: '++id, projectId, operationType, name, isPreset',
+  presets: '++id, name, createdAt, operationType',
+  usageHistory: '++id, model, timestamp, projectId, chapterId, date',
+  reviewMessages: '++id, chapterId, role, createdAt',
+  folders: '++id, name, parentId, createdAt, updatedAt',
+  modelCache: '++id',
+  reviewRuns: '++id, chapterId, createdAt'
+});
+
 // Setup steps:
 // Translation guided:  'created' -> 'analyze' -> 'compare' -> 'completed'
 // Translation quick:   'created' -> 'quick-setup' -> 'completed'

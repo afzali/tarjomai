@@ -71,6 +71,43 @@ function logResponse(model, result, ms) {
   } catch { /* ignore */ }
 }
 
+/**
+ * Store token usage locally (per project/chapter) — never breaks the request.
+ * @param {string} model @param {any} usage @param {any} options
+ */
+async function recordUsage(model, usage, options) {
+  if (!usage) return;
+  try {
+    await usageService.addUsage({
+      model,
+      usage,
+      projectId: options.projectId || null,
+      chapterId: options.chapterId || null,
+      operationType: options.operationType || null
+    });
+  } catch {
+    // خطای ذخیره مصرف نباید عملکرد اصلی را متوقف کند
+  }
+}
+
+/** Human-readable error for a failed (non-2xx) OpenRouter response. */
+function httpErrorMessage(/** @type {number} */ status, /** @type {any} */ errorData) {
+  if (status === 401) return 'API Key نامعتبر است';
+  if (status === 402) return 'اعتبار کافی برای این درخواست رزرو نشد (۴۰۲). موجودی OpenRouter را افزایش دهید یا مدل ارزان‌تری انتخاب کنید.';
+  if (status === 429) return 'تعداد درخواست‌ها زیاد است (۴۲۹). کمی بعد دوباره تلاش کنید.';
+  return errorData?.error?.message || `خطا: ${status}`;
+}
+
+const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+/**
+ * @typedef {{
+ *   success: boolean, content?: string, error?: string, cancelled?: boolean,
+ *   reasoning?: string, finishReason?: string|null, truncated?: boolean,
+ *   empty?: boolean, usage?: any
+ * }} ChatResult
+ */
+
 export const openrouterService = {
   async testConnection(apiKey) {
     try {
@@ -117,6 +154,13 @@ export const openrouterService = {
     }
   },
 
+  /**
+   * @param {string} apiKey
+   * @param {string} model
+   * @param {any[]} messages
+   * @param {any} [options]
+   * @returns {Promise<ChatResult>}
+   */
   async sendMessage(apiKey, model, messages, options = {}) {
     const maxRetries = 3;
     let lastError = null;
@@ -192,18 +236,8 @@ export const openrouterService = {
 
         const data = await response.json();
         
-        // ذخیره مصرف در تاریخچه محلی
-        if (data.usage) {
-          try {
-            await usageService.addUsage({
-              model,
-              usage: data.usage,
-              projectId: options.projectId || null
-            });
-          } catch (e) {
-            // خطای ذخیره مصرف نباید عملکرد اصلی را متوقف کند
-          }
-        }
+        // ذخیره مصرف در تاریخچه محلی (به تفکیک پروژه و فصل)
+        await recordUsage(model, data.usage, options);
         
         const choice = data.choices?.[0];
         const finishReason = choice?.finish_reason || null;
@@ -242,10 +276,32 @@ export const openrouterService = {
     };
   },
 
+  /**
+   * Streamed chat completion. onChunk(delta, fullSoFar) is called as text
+   * arrives. Cancel with options.signal: the result then has cancelled=true
+   * and `content` holds whatever arrived before the abort. A mid-stream
+   * failure also returns the partial `content` next to the error.
+   * @param {string} apiKey
+   * @param {string} model
+   * @param {any[]} messages
+   * @param {any} [options]
+   * @param {(delta: string, full: string) => void} [onChunk]
+   * @returns {Promise<ChatResult>}
+   */
   async streamMessage(apiKey, model, messages, options = {}, onChunk) {
+    const signal = options.signal;
+    logRequest(model, messages, options);
+    const t0 = nowMs();
+    let fullContent = '';
+    /** @type {any} */
+    let usage = null;
+    /** @type {string|null} */
+    let finishReason = null;
+
     try {
       const response = await fetch(`${OPENROUTER_API_URL}/chat/completions`, {
         method: 'POST',
+        signal,
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'HTTP-Referer': window.location.origin,
@@ -260,46 +316,72 @@ export const openrouterService = {
           seed: options.seed ?? 42,
           top_p: options.top_p ?? 1,
           reasoning: options.reasoning ?? { effort: 'low', exclude: true },
+          usage: { include: true },
           stream: true
         })
       });
 
-      if (!response.ok) {
-        return { success: false, error: `خطا: ${response.status}` };
+      if (!response.ok || !response.body) {
+        const errorData = await response.json().catch(() => ({}));
+        const rErr = { success: false, error: httpErrorMessage(response.status, errorData) };
+        logResponse(model, rErr, nowMs() - t0);
+        return rErr;
       }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let fullContent = '';
+      // SSE events can be split across network chunks, so buffer until '\n'.
+      let buffer = '';
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        buffer += decoder.decode(value, { stream: true });
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n').filter(line => line.startsWith('data: '));
+        let nl;
+        while ((nl = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          // Skip blank lines and SSE comments (": OPENROUTER PROCESSING")
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (!data || data === '[DONE]') continue;
 
-        for (const line of lines) {
-          const data = line.slice(6);
-          if (data === '[DONE]') continue;
+          /** @type {any} */
+          let parsed;
+          try { parsed = JSON.parse(data); } catch { continue; }
+          if (parsed.error) throw new Error(parsed.error.message || 'خطا در پاسخ مدل');
 
-          try {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content || '';
-            if (content) {
-              fullContent += content;
-              if (onChunk) onChunk(content, fullContent);
-            }
-          } catch (e) {
-            // Skip invalid JSON
+          const choice = parsed.choices?.[0];
+          const delta = choice?.delta?.content || '';
+          if (delta) {
+            fullContent += delta;
+            if (onChunk) onChunk(delta, fullContent);
           }
+          if (choice?.finish_reason) finishReason = choice.finish_reason;
+          if (parsed.usage) usage = parsed.usage;
         }
       }
-
-      return { success: true, content: fullContent };
-    } catch (error) {
-      return { success: false, error: error.message };
+    } catch (/** @type {any} */ error) {
+      if (error?.name === 'AbortError') {
+        return { success: false, cancelled: true, error: 'لغو شده توسط کاربر', content: fullContent };
+      }
+      const rErr = { success: false, error: error?.message || 'خطا در دریافت پاسخ', content: fullContent };
+      logResponse(model, rErr, nowMs() - t0);
+      return rErr;
     }
+
+    await recordUsage(model, usage, options);
+    const rOk = {
+      success: true,
+      content: fullContent,
+      finishReason,
+      truncated: finishReason === 'length',
+      empty: !fullContent.trim(),
+      usage
+    };
+    logResponse(model, rOk, nowMs() - t0);
+    return rOk;
   },
 
   sleep(ms) {

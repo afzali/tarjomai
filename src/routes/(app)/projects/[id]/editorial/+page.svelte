@@ -15,6 +15,8 @@
   import FileTypeIcon from '$lib/components/tarjomai/file-type-icon.svelte';
   import ReviewPanel from '$lib/components/tarjomai/review-panel.svelte';
   import { usageService } from '$lib/services/usage.service.js';
+  import { applyTextFix, pickFields, sameFields, restoreFields } from '$lib/utils/text-fix.utils.js';
+  import { rangeForPhrase, centerInScroller, setHighlight, clearHighlights } from '$lib/utils/text-highlight.utils.js';
 
   let projectId = $derived(parseInt($page.params.id || '0', 10) || 0);
   /** @type {any} */
@@ -224,6 +226,7 @@
 
   function selectChapter(/** @type {any} */ chapter) {
     selectedChapter = chapter;
+    clearReviewMarks();
     blocks = migrateToBlocks(chapter);
     processingIndex = -1;
   }
@@ -618,15 +621,98 @@
     showResetConfirm = false;
   }
 
-  function computeFinalOutput() {
-    return blocks.map(b => b.status === 'edited' ? (b.editedText || b.outputText || '') : (b.outputText || b.content)).join('\n\n');
+  /** The chapter as the review panel sees it: one unit per LIVE block. An
+   * unprocessed block's "edited" text is its source (same as the export). */
+  const reviewUnits = $derived(blocks.map(b => ({ id: b.id, source: b.content || '', target: blockOutputText(b) || b.content || '' })));
+
+  /** Project editing rules as review criteria, without the "return only the
+   * edited text" line that is meant for the editing model. */
+  const reviewRules = $derived(getSystemPrompt().replace(/\n*متن ویرایش‌شده را مستقیماً برگردانید[^\n]*/g, '').trim());
+
+  /**
+   * Apply one-click fixes from the review panel ({ original → suggested }
+   * inside one block's edited text). Saves once per batch. Returns, per fix,
+   * an undo token (the block's fields before/after) or null.
+   * @param {{ blockId: string, original: string, suggested: string }[]} fixes
+   * @returns {Promise<({ blockId: string, before: any, after: any } | null)[]>}
+   */
+  async function applyReviewFixes(fixes) {
+    const tokens = fixes.map((f) => {
+      const i = blocks.findIndex(b => b.id === f.blockId);
+      if (i === -1) return null;
+      const b = blocks[i];
+      const next = applyTextFix(blockOutputText(b) || b.content || '', f.original, f.suggested);
+      if (next === null) return null;
+      const before = pickFields(b, REVIEW_FIX_FIELDS);
+      // An unprocessed block gets its source as the baseline output, so the
+      // diff view shows exactly what the fix changed.
+      blocks[i] = { ...b, outputText: b.outputText || b.content, status: 'edited', editedText: next };
+      return { blockId: f.blockId, before, after: pickFields(blocks[i], REVIEW_FIX_FIELDS) };
+    });
+    if (tokens.some(Boolean)) {
+      blocks = [...blocks];
+      await saveBlocks();
+    }
+    return tokens;
   }
 
-  /** Source text built from the LIVE blocks, so edits/deletions the user made
-   * are reflected. Using the stored chapter.sourceText would send stale source
-   * (e.g. a paragraph the user already deleted). */
-  function computeFinalSource() {
-    return blocks.map(b => b.content).join('\n\n');
+  /** Block fields a review fix may touch (snapshotted for exact undo). */
+  const REVIEW_FIX_FIELDS = ['status', 'editedText', 'outputText'];
+
+  /**
+   * Undo review fixes from their tokens (newest first). A block is restored
+   * only if it is still exactly as the fix left it.
+   * @param {({ blockId: string, before: any, after: any } | null)[]} tokens
+   * @returns {Promise<boolean[]>}
+   */
+  async function revertReviewFixes(tokens) {
+    const results = tokens.map((t) => {
+      const i = t ? blocks.findIndex(b => b.id === t.blockId) : -1;
+      if (!t || i === -1 || !sameFields(blocks[i], t.after, REVIEW_FIX_FIELDS)) return false;
+      blocks[i] = restoreFields(blocks[i], t.before, REVIEW_FIX_FIELDS);
+      return true;
+    });
+    if (results.some(Boolean)) {
+      blocks = [...blocks];
+      await saveBlocks();
+    }
+    return results;
+  }
+
+  // Block briefly highlighted after "show in text" from the review panel
+  let flashBlockId = $state('');
+
+  /**
+   * "Show in text" from the review panel: scroll both columns to the block,
+   * flash it, and mark the exact phrase in the edited text (plus the source
+   * excerpt in the source column) so it can be checked before applying.
+   * Marks stay until the next locate, or vanish when that text re-renders.
+   * @param {string} id
+   * @param {{ phrase?: string, source?: string, tone?: 'issue'|'applied', scroll?: boolean }} [opts]
+   */
+  async function locateBlock(id, opts = {}) {
+    await tick();
+    const el = outputScrollEl?.querySelector(`[data-block-id="${CSS.escape(id)}"]`);
+    if (!el) return;
+    const srcEl = sourceScrollEl?.querySelector(`[data-source-block-id="${CSS.escape(id)}"]`);
+    const phrase = rangeForPhrase(el, opts.phrase || '');
+    const source = opts.tone === 'applied' ? null : rangeForPhrase(srcEl, opts.source || '');
+    clearReviewMarks();
+    setHighlight(opts.tone === 'applied' ? 'review-applied' : 'review-phrase', [phrase]);
+    setHighlight('review-source', [source]);
+    if (opts.scroll === false) return;
+    // Scroll both columns to the marks (or the block) with the ratio-based
+    // column sync paused until these scroll events have been dispatched.
+    _syncingScroll = true;
+    centerInScroller(outputScrollEl, phrase || el);
+    centerInScroller(sourceScrollEl, source || srcEl);
+    setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => { _syncingScroll = false; })), 50);
+    flashBlockId = id;
+    setTimeout(() => { if (flashBlockId === id) flashBlockId = ''; }, 1800);
+  }
+
+  function clearReviewMarks() {
+    clearHighlights('review-phrase', 'review-source', 'review-applied');
   }
 </script>
 
@@ -818,6 +904,7 @@
                       {@const rich = output ? buildRichDiff(block.content, output) : null}
                       <!-- svelte-ignore a11y_no_static_element_interactions -->
                       <div
+                        data-source-block-id={block.id}
                         class="rounded-lg px-2 py-1.5 transition-colors {hoveredBlockId === block.id ? 'bg-muted/40 ring-1 ring-primary/15' : ''} {block.outOfSync ? 'ring-1 ring-amber-300 dark:ring-amber-700' : ''}"
                         onmouseenter={() => hoveredBlockId = block.id}
                         onmouseleave={() => hoveredBlockId = ''}
@@ -885,8 +972,9 @@
                 {#each blocks as block, idx (block.id)}
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
                   <div
+                    data-block-id={block.id}
                     class="group/out relative rounded-lg px-2 py-1.5 transition-colors min-h-[1.5rem]
-                      {hoveredBlockId === block.id ? 'bg-muted/40 ring-1 ring-primary/15' : 'hover:bg-muted/20'}"
+                      {flashBlockId === block.id ? 'bg-primary/10 ring-2 ring-primary/50' : hoveredBlockId === block.id ? 'bg-muted/40 ring-1 ring-primary/15' : 'hover:bg-muted/20'}"
                     onmouseenter={() => hoveredBlockId = block.id}
                     onmouseleave={() => hoveredBlockId = ''}
                   >
@@ -1018,18 +1106,29 @@
 
       <!-- Review panel -->
       {#if reviewOpen && selectedChapter}
-        <div class="w-80 shrink-0 border-r">
-          <ReviewPanel
-            chapterId={selectedChapter.id}
-            {projectId}
-            operationType="editorial"
-            sourceText={computeFinalSource()}
-            outputText={computeFinalOutput()}
-            apiKey={settings?.openRouterApiKey || ''}
-            defaultModel={reviewModel}
-            bind:quote={reviewQuote}
-            onClose={() => reviewOpen = false}
-          />
+        <div class="shrink-0 border-r">
+          <!-- Keyed by chapter so chat history / review state follow the selected chapter -->
+          {#key selectedChapter.id}
+            <ReviewPanel
+              chapterId={selectedChapter.id}
+              {projectId}
+              operationType="editorial"
+              units={reviewUnits}
+              apiKey={settings?.openRouterApiKey || ''}
+              defaultModel={reviewModel}
+              {reviewRules}
+              glossary={config?.glossary || []}
+              sourceLanguage={project?.sourceLanguage || ''}
+              targetLanguage={project?.sourceLanguage || ''}
+              targetKey="output"
+              targetLabel="متن ویرایش‌شده"
+              applyFixes={applyReviewFixes}
+              revertFixes={revertReviewFixes}
+              onLocate={locateBlock}
+              bind:quote={reviewQuote}
+              onClose={() => { reviewOpen = false; clearReviewMarks(); }}
+            />
+          {/key}
         </div>
       {/if}
     </div>

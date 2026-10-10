@@ -13,8 +13,12 @@
   import DiffView from '$lib/components/tarjomai/diff-view.svelte';
   import FileTypeIcon from '$lib/components/tarjomai/file-type-icon.svelte';
   import ReviewPanel from '$lib/components/tarjomai/review-panel.svelte';
+  import { reviewService } from '$lib/services/review.service.js';
+  import { reviewState, reviewStateLabel } from '$lib/utils/review-status.utils.js';
   import { usageService } from '$lib/services/usage.service.js';
   import { buildGlossaryPromptSection, filterGlossaryForText } from '$lib/utils/glossary.utils.js';
+  import { applyTextFix, locateSpan, pickFields, sameFields, restoreFields } from '$lib/utils/text-fix.utils.js';
+  import { rangeForPhrase, centerInScroller, setHighlight, clearHighlights } from '$lib/utils/text-highlight.utils.js';
 
   let projectId = $derived(parseInt($page.params.id || '0', 10) || 0);
   /** @type {any} */
@@ -227,6 +231,7 @@
 
     project = loaded.project;
     chapters = loaded.chapters;
+    loadReviewRuns();
     config = loaded.config;
 
     // Redirect if wrong operation type
@@ -350,6 +355,7 @@
 
   function selectChapter(/** @type {any} */ chapter) {
     selectedChapter = chapter;
+    clearReviewMarks();
     blocks = migrateToBlocks(chapter);
     doneSentences = 0;
     totalSentences = 0;
@@ -1056,6 +1062,35 @@ Rules:
     }
   }
 
+  // Latest "بررسی کلی" run per chapter, for the ring around the status dot
+  /** @type {Record<number, any>} */
+  let reviewRuns = $state({});
+
+  async function loadReviewRuns() {
+    const map = await reviewService.getLatestRunsByChapter(chapters.map(c => c.id));
+    reviewRuns = Object.fromEntries(map);
+  }
+
+  /** The review panel saved a run: refresh that chapter's ring. @param {any} run */
+  function onReviewRunChange(run) {
+    reviewRuns = { ...reviewRuns, [run.chapterId]: run };
+  }
+
+  /**
+   * Review state of a chapter, judged on the layer the review read.
+   * @param {any} chapter
+   */
+  function chapterReviewState(chapter) {
+    const run = reviewRuns[chapter.id];
+    if (!run) return reviewState(null, []);
+    const units = (chapter.blocks || []).map((/** @type {any} */ b) => ({
+      id: b.id,
+      source: b.content || '',
+      target: run.targetKey === 'layer2' && b.paragraphTranslation ? b.paragraphTranslation : blockTranslationText(b)
+    }));
+    return reviewState(run, units);
+  }
+
   /**
    * Translation status for a chapter, derived from its persisted blocks.
    * @param {any} chapter
@@ -1186,15 +1221,135 @@ Rules:
     showResetConfirm = false;
   }
 
-  function computeFinalOutput() {
-    return blocks.map(b => blockDisplayText(b)).join('\n\n');
+  /** The chapter as the review panel sees it: one unit per LIVE block (so the
+   * user's edits/deletions are reflected), with the translation of the layer
+   * currently on screen. */
+  const reviewUnits = $derived(blocks.map(b => ({ id: b.id, source: b.content || '', target: blockDisplayText(b) || '' })));
+
+  /**
+   * Apply one-click fixes from the review panel ({ original → suggested }
+   * inside one block). Works on the reviewed layer: the fluent text when the
+   * block has one, otherwise the comparative one. A fix that fits inside a
+   * single sentence only touches that sentence, so the side-by-side sentence
+   * alignment survives; anything wider turns the block into an edited block
+   * (shown with a diff against the model output). Saves once per batch.
+   * Returns, per fix, an undo token (the block's fields before/after) or null.
+   * @param {{ blockId: string, original: string, suggested: string, target: string }[]} fixes
+   * @returns {Promise<({ blockId: string, before: any, after: any } | null)[]>}
+   */
+  async function applyReviewFixes(fixes) {
+    const tokens = fixes.map((f) => {
+      const i = blocks.findIndex(b => b.id === f.blockId);
+      if (i === -1) return null;
+      const next = fixBlock(blocks[i], f);
+      if (!next) return null;
+      const before = pickFields(blocks[i], REVIEW_FIX_FIELDS);
+      blocks[i] = next;
+      return { blockId: f.blockId, before, after: pickFields(next, REVIEW_FIX_FIELDS) };
+    });
+    if (tokens.some(Boolean)) {
+      blocks = [...blocks];
+      await saveBlocks();
+    }
+    return tokens;
   }
 
-  /** Source text built from the LIVE blocks, so edits/deletions the user made
-   * are reflected. Using the stored chapter.sourceText would send stale source
-   * (e.g. a paragraph the user already deleted). */
-  function computeFinalSource() {
-    return blocks.map(b => b.content).join('\n\n');
+  /** Block fields a review fix may touch (snapshotted for exact undo). */
+  const REVIEW_FIX_FIELDS = ['status', 'editedTranslation', 'paragraphTranslation', 'sentences', 'originalTranslation'];
+
+  /**
+   * @param {Block} b
+   * @param {{ original: string, suggested: string, target: string }} f
+   * @returns {Block | null} the fixed block, or null if `original` isn't there
+   */
+  function fixBlock(b, f) {
+    if (f.target === 'layer2' && b.paragraphTranslation) {
+      const next = applyTextFix(b.paragraphTranslation, f.original, f.suggested);
+      return next === null ? null : { ...b, paragraphTranslation: next };
+    }
+
+    if (b.status !== 'edited' && b.sentences?.length && f.original.trim()) {
+      const si = b.sentences.findIndex(s => s.status === 'done' && !!locateSpan(s.translation, f.original));
+      if (si !== -1) {
+        const cur = b.sentences[si].translation;
+        const next = applyTextFix(cur, f.original, f.suggested);
+        if (next !== null && next.trim()) {
+          const sentences = [...b.sentences];
+          // An omission fix only appends text after this sentence; if the
+          // next sentence has no translation yet, the added text is its
+          // translation — fill it there so the alignment stays right.
+          const gap = sentences[si + 1];
+          const added = next.startsWith(cur) ? next.slice(cur.length).trim() : '';
+          if (added && gap && gap.status !== 'done' && !gap.translation?.trim()) {
+            sentences[si + 1] = { ...gap, translation: added, status: 'done' };
+          } else {
+            sentences[si] = { ...sentences[si], translation: next };
+          }
+          return { ...b, sentences };
+        }
+      }
+    }
+
+    const current = blockTranslationText(b);
+    const next = applyTextFix(current, f.original, f.suggested);
+    if (next === null) return null;
+    return { ...b, status: 'edited', editedTranslation: next, originalTranslation: b.originalTranslation ?? current };
+  }
+
+  /**
+   * Undo review fixes from their tokens (newest first). A block is restored
+   * only if it is still exactly as the fix left it.
+   * @param {({ blockId: string, before: any, after: any } | null)[]} tokens
+   * @returns {Promise<boolean[]>}
+   */
+  async function revertReviewFixes(tokens) {
+    const results = tokens.map((t) => {
+      const i = t ? blocks.findIndex(b => b.id === t.blockId) : -1;
+      if (!t || i === -1 || !sameFields(blocks[i], t.after, REVIEW_FIX_FIELDS)) return false;
+      blocks[i] = restoreFields(blocks[i], t.before, REVIEW_FIX_FIELDS);
+      return true;
+    });
+    if (results.some(Boolean)) {
+      blocks = [...blocks];
+      await saveBlocks();
+    }
+    return results;
+  }
+
+  // Block briefly highlighted after "show in text" from the review panel
+  let flashBlockId = $state('');
+
+  /**
+   * "Show in text" from the review panel: scroll both columns to the block,
+   * flash it, and mark the exact phrase in the translation (plus the source
+   * excerpt in the source column) so it can be checked before applying.
+   * Marks stay until the next locate, or vanish when that text re-renders.
+   * @param {string} id
+   * @param {{ phrase?: string, source?: string, tone?: 'issue'|'applied', scroll?: boolean }} [opts]
+   */
+  async function locateBlock(id, opts = {}) {
+    await tick();
+    const el = translationScrollEl?.querySelector(`[data-block-id="${CSS.escape(id)}"]`);
+    if (!el) return;
+    const srcEl = sourceScrollEl?.querySelector(`[data-source-block-id="${CSS.escape(id)}"]`);
+    const phrase = rangeForPhrase(el, opts.phrase || '');
+    const source = opts.tone === 'applied' ? null : rangeForPhrase(srcEl, opts.source || '');
+    clearReviewMarks();
+    setHighlight(opts.tone === 'applied' ? 'review-applied' : 'review-phrase', [phrase]);
+    setHighlight('review-source', [source]);
+    if (opts.scroll === false) return;
+    // Scroll both columns to the marks (or the block) with the ratio-based
+    // column sync paused until these scroll events have been dispatched.
+    _syncingScroll = true;
+    centerInScroller(translationScrollEl, phrase || el);
+    centerInScroller(sourceScrollEl, source || srcEl);
+    setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => { _syncingScroll = false; })), 50);
+    flashBlockId = id;
+    setTimeout(() => { if (flashBlockId === id) flashBlockId = ''; }, 1800);
+  }
+
+  function clearReviewMarks() {
+    clearHighlights('review-phrase', 'review-source', 'review-applied');
   }
 
   /** Count sentences in a block with errors */
@@ -1272,7 +1427,8 @@ Rules:
     <!-- Chapter list toolbar -->
     {#if chapters.length > 0}
       <div class="px-2 py-1.5 border-b flex items-center justify-between gap-1">
-        <span class="text-[11px] text-muted-foreground">{chapters.length} فصل</span>
+        <span class="text-[11px] text-muted-foreground cursor-help"
+          title="نقطه‌ی سبز: ترجمه کامل · زرد: ترجمه ناقص · توخالی: ترجمه‌نشده&#10;حلقه‌ی آبی: بررسی کلی کامل · حلقه‌ی نارنجی: بررسی کلی ناتمام · بدون حلقه: بررسی نشده">{chapters.length} فصل</span>
         {#if selectMode}
           <div class="flex items-center gap-1">
             <button onclick={selectAllChapters}
@@ -1299,6 +1455,7 @@ Rules:
     <div class="flex-1 overflow-y-auto p-2 space-y-0.5">
       {#each chapters as chapter, chapterIndex (chapter.id)}
         {@const st = chapterStatus(chapter)}
+        {@const rv = chapterReviewState(chapter)}
         {@const isSel = selectedChapterIds.has(chapter.id)}
         <div class="group flex items-center gap-1 rounded-lg {selectMode && isSel ? 'bg-primary/10 ring-1 ring-primary/30' : selectedChapter?.id === chapter.id && !selectMode ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}">
           {#if selectMode}
@@ -1314,14 +1471,22 @@ Rules:
           {:else}
             <button onclick={() => selectChapter(chapter)} class="flex-1 text-right px-3 py-2 text-sm truncate">
               <div class="flex items-center gap-1.5">
-                <!-- Translation status dot -->
-                {#if st === 'done'}
-                  <span class="w-2 h-2 rounded-full shrink-0 bg-green-500" title="ترجمه کامل"></span>
-                {:else if st === 'partial'}
-                  <span class="w-2 h-2 rounded-full shrink-0 bg-amber-500" title="ترجمه ناقص"></span>
-                {:else}
-                  <span class="w-2 h-2 rounded-full shrink-0 border border-muted-foreground/40 {selectedChapter?.id === chapter.id ? 'border-primary-foreground/50' : ''}" title="ترجمه‌نشده"></span>
-                {/if}
+                <!-- Status: the dot is the translation, the ring around it the "بررسی کلی"
+                     (blue = done, orange = unfinished, none = never reviewed) -->
+                <span
+                  class="w-4 h-4 rounded-full shrink-0 inline-flex items-center justify-center border-2
+                    {rv.state === 'complete' ? 'border-blue-500' : rv.state === 'incomplete' ? 'border-orange-500' : 'border-transparent'}
+                    {rv.running ? 'animate-pulse' : ''}"
+                  title="{st === 'done' ? 'ترجمه کامل' : st === 'partial' ? 'ترجمه ناقص' : 'ترجمه‌نشده'} · {reviewStateLabel(rv)}"
+                >
+                  {#if st === 'done'}
+                    <span class="w-2 h-2 rounded-full bg-green-500"></span>
+                  {:else if st === 'partial'}
+                    <span class="w-2 h-2 rounded-full bg-amber-500"></span>
+                  {:else}
+                    <span class="w-2 h-2 rounded-full border border-muted-foreground/40 {selectedChapter?.id === chapter.id ? 'border-primary-foreground/50' : ''}"></span>
+                  {/if}
+                </span>
                 <span class="text-[11px] tabular-nums shrink-0 {selectedChapter?.id === chapter.id ? 'text-primary-foreground/60' : 'text-muted-foreground'}">{chapterIndex + 1}.</span>
                 <span class="truncate">{chapter.title}</span>
               </div>
@@ -1596,6 +1761,7 @@ Rules:
                       {@const srcSents = splitSentences(block.content)}
                       <!-- svelte-ignore a11y_no_static_element_interactions -->
                       <div
+                        data-source-block-id={block.id}
                         class="rounded py-0.5 px-1 transition-colors {hoveredBlockId === block.id ? 'bg-muted/40 ring-1 ring-primary/15' : ''}"
                         onmouseenter={() => hoveredBlockId = block.id}
                         onmouseleave={() => { hoveredBlockId = ''; hoveredSentenceIndex = -1; }}
@@ -1674,8 +1840,9 @@ Rules:
                   {@const isTranslatingBlock = translating && block.sentences?.some(s => s.status === 'translating')}
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
                   <div
+                    data-block-id={block.id}
                     class="group/out relative rounded-lg px-2 py-1.5 transition-colors min-h-[1.5rem]
-                      {hoveredBlockId === block.id ? 'bg-muted/40 ring-1 ring-primary/15' : 'hover:bg-muted/20'}"
+                      {flashBlockId === block.id ? 'bg-primary/10 ring-2 ring-primary/50' : hoveredBlockId === block.id ? 'bg-muted/40 ring-1 ring-primary/15' : 'hover:bg-muted/20'}"
                     onmouseenter={() => hoveredBlockId = block.id}
                     onmouseleave={() => { hoveredBlockId = ''; hoveredSentenceIndex = -1; }}
                   >
@@ -1881,19 +2048,30 @@ Rules:
 
       <!-- Review panel -->
       {#if reviewOpen && selectedChapter}
-        <div class="w-80 shrink-0 border-r">
-          <ReviewPanel
-            chapterId={selectedChapter.id}
-            {projectId}
-            operationType="translation"
-            sourceText={computeFinalSource()}
-            outputText={computeFinalOutput()}
-            apiKey={settings?.openRouterApiKey || ''}
-            defaultModel={reviewModel}
-            reviewRules={rulesSection}
-            bind:quote={reviewQuote}
-            onClose={() => reviewOpen = false}
-          />
+        <div class="shrink-0 border-r">
+          <!-- Keyed by chapter so chat history / review state follow the selected chapter -->
+          {#key selectedChapter.id}
+            <ReviewPanel
+              chapterId={selectedChapter.id}
+              {projectId}
+              operationType="translation"
+              units={reviewUnits}
+              apiKey={settings?.openRouterApiKey || ''}
+              defaultModel={reviewModel}
+              reviewRules={rulesSection}
+              glossary={config?.glossary || []}
+              sourceLanguage={project?.sourceLanguage || ''}
+              targetLanguage={project?.targetLanguage || ''}
+              targetKey={viewLayer === 2 ? 'layer2' : 'layer1'}
+              targetLabel={viewLayer === 2 ? 'ترجمه روان' : 'ترجمه تطبیقی'}
+              applyFixes={applyReviewFixes}
+              revertFixes={revertReviewFixes}
+              onLocate={locateBlock}
+              onRunChange={onReviewRunChange}
+              bind:quote={reviewQuote}
+              onClose={() => { reviewOpen = false; clearReviewMarks(); }}
+            />
+          {/key}
         </div>
       {/if}
     </div>

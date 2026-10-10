@@ -401,6 +401,7 @@
              This prevents Svelte from overwriting user's in-progress typing. -->
         <div
           bind:this={blockRefs[block.id]}
+          data-source-block-id={block.id}
           contenteditable={!readonly}
           dir="auto"
           class={blockClasses(block) + (sentenceHighlight[block.id] !== undefined && sentenceHighlight[block.id] >= 0 ? ' text-transparent caret-current' : '')}
