@@ -50,8 +50,12 @@ export const REVIEW_CATEGORIES = [
   }
 ];
 
-/** @type {Record<string, { label: string, category: string }>} */
+/**
+ * Issue types, in order of seriousness (also the tie-break when sorting).
+ * @type {Record<string, { label: string, category: string }>}
+ */
 export const ISSUE_TYPES = {
+  untranslated: { label: 'ترجمه‌نشده', category: 'critical' },
   omission: { label: 'جاافتادگی', category: 'critical' },
   mistranslation: { label: 'اشتباه در معنا', category: 'critical' },
   addition: { label: 'افزوده‌ی نابجا', category: 'critical' },
@@ -196,7 +200,9 @@ function contextSections(ctx, cfg, text, asCriteria = false) {
   }
   if (cfg.includeGlossary && ctx.glossarySection) {
     const g = ctx.glossarySection(text);
-    if (g) out.push(`━━━ واژه‌نامه ━━━\n${g}`);
+    if (g) out.push(asCriteria
+      ? `━━━ واژه‌نامه ━━━\n(هر مدخل فقط وقتی ملاک است که همان واژه با همان معنا در جمله آمده باشد؛ هم‌ریشه یا شبیه بودن کافی نیست.)\n${g}`
+      : `━━━ واژه‌نامه ━━━\n${g}`);
   }
   return out;
 }
@@ -209,13 +215,16 @@ function reviewContract(op) {
 {"issues":[{"paragraph":12,"category":"critical","type":"omission","priority":3,"explanation":"توضیح کوتاه یک‌جمله‌ای","source_excerpt":"بخش مربوط از ${l.source}","original":"متن دقیق فعلی در ${l.target}","suggested":"متن جایگزین کامل"}],"summary":"ارزیابی یک‌جمله‌ای این بخش"}
 اگر ایرادی نیست: {"issues":[],"summary":"..."}
 
-category — از مهم به کم‌اهمیت:
-- "critical": ایراد جدی و قطعی — جاافتادن جمله یا عبارت، اشتباه محرز در انتقال معنا، معنای وارونه، افزودن مطلبی که در اصل نیست، خطا در عدد، نام یا تاریخ.
+category — از مهم به کم‌اهمیت (دسته را بر اساس «اثر ایراد بر خواننده» انتخاب کن، نه بر اساس منبعی که ایراد را با آن فهمیدی):
+- "critical": ایراد جدی و قطعی — واژه یا عبارتی که اصلاً ترجمه نشده و به زبان مبدأ مانده، جاافتادن جمله یا عبارت، اشتباه محرز در انتقال معنا، معنای وارونه، افزودن مطلبی که در اصل نیست، خطا در عدد، نام یا تاریخ.
 - "error": اشتباه ساده‌تر ولی قطعی — غلط املایی، دستوری، نگارشی، نشانه‌گذاری، تایپی.
-- "consistency": یکدستی — ناهماهنگی یک اصطلاح در بندهای مختلف، رعایت‌نشدن واژه‌نامه یا قوانین پروژه.
+- "consistency": یکدستی — فقط وقتی ترجمه با معادلِ تعیین‌شده در واژه‌نامه یا قوانین پروژه «تناقض» دارد، یا یک اصطلاح در بندهای مختلف به چند شکل ترجمه شده است.
 - "suggestion": پیشنهاد اختیاری — روان‌تر کردن، واژه‌گزینی بهتر، سبک.
-type یکی از: omission, mistranslation, addition, number, spelling, grammar, punctuation, terminology, glossary, rule, fluency, style, other
-priority: 3 = خیلی مهم، 2 = متوسط، 1 = کم (نسبت به موارد هم‌دسته).
+type یکی از: untranslated, omission, mistranslation, addition, number, spelling, grammar, punctuation, terminology, glossary, rule, fluency, style, other
+- untranslated = واژه یا عبارتی از زبان مبدأ که بدون ترجمه در متن مقصد مانده است؛ همیشه "critical" با priority 3.
+- glossary/terminology/rule را فقط برای تناقضِ واقعی به کار ببر. اگر معادل رعایت شده، گزارشش نکن؛ و اگر خودت می‌نویسی «رعایت شده» یا هدفت روان‌تر کردن است، category باید "suggestion" باشد.
+- واژه‌نامه را مکانیکی اعمال نکن: یک مدخل فقط وقتی ملاک است که همان واژه با همان معنا در همین جمله آمده باشد؛ هم‌ریشه یا شبیه بودن کافی نیست.
+priority (اثر بر خواننده‌ی نهایی): 3 = معنا را عوض می‌کند، چیزی را جا می‌اندازد یا متن را نادرست/ناخوانا می‌کند؛ 2 = خطای آشکار که معنا را عوض نمی‌کند؛ 1 = بهبود جزئی.
 paragraph: شماره‌ی بند، دقیقاً همان عدد داخل [ ].
 
 قواعد original و suggested (اصلاح با یک کلیک و خودکار اعمال می‌شود، پس دقیق باش):
@@ -349,6 +358,84 @@ export function normalizeIssue(raw) {
   };
 }
 
+/** Types that are objectively serious: always "critical", whatever category the model gave. */
+const ALWAYS_CRITICAL = new Set(['untranslated', 'omission']);
+
+const SCRIPTS = /** @type {[string, RegExp][]} */ ([
+  ['latin', /\p{Script=Latin}/u],
+  ['arabic', /\p{Script=Arabic}/u],
+  ['cyrillic', /\p{Script=Cyrillic}/u],
+  ['greek', /\p{Script=Greek}/u],
+  ['hebrew', /\p{Script=Hebrew}/u],
+  ['cjk', /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u],
+  ['devanagari', /\p{Script=Devanagari}/u],
+  ['thai', /\p{Script=Thai}/u]
+]);
+
+/** @param {string} ch */
+function scriptOf(ch) {
+  for (const [name, re] of SCRIPTS) if (re.test(ch)) return name;
+  return null;
+}
+
+/** Script most letters of `text` are written in. @param {string} text */
+function dominantScript(text) {
+  /** @type {Record<string, number>} */
+  const counts = {};
+  for (const ch of text || '') {
+    const s = scriptOf(ch);
+    if (s) counts[s] = (counts[s] || 0) + 1;
+  }
+  let best = null, max = 0;
+  for (const [s, n] of Object.entries(counts)) if (n > max) { best = s; max = n; }
+  return best;
+}
+
+/**
+ * Does this fix replace source-language text left untranslated in the
+ * translation? Checked in code so it doesn't depend on how the model labelled
+ * it: a word in the source's script inside the translation (e.g. English left
+ * in Persian), or — when both share the Arabic script — a word with Persian-
+ * only letters (پ چ ژ گ) inside an Arabic translation. The fix must remove it.
+ * @param {{ original: string, suggested: string }} issue
+ * @param {ReviewUnit} unit
+ * @param {string} [targetLanguage]
+ */
+export function looksUntranslated(issue, unit, targetLanguage = '') {
+  const original = issue.original || '';
+  const suggested = issue.suggested || '';
+  if (!original.trim() || !unit) return false;
+  const src = dominantScript(unit.source);
+  const tgt = dominantScript(unit.target);
+  if (!src || !tgt) return false;
+  const words = original.split(/[^\p{L}\p{M}‌]+/u).filter(w => w.length >= 3);
+
+  if (src !== tgt) {
+    return words.some(w => dominantScript(w) === src && !suggested.includes(w));
+  }
+  if (src === 'arabic' && /^ar$|arab|عرب/i.test(targetLanguage.trim())) {
+    return words.some(w => /[پچژگ]/.test(w) && !suggested.includes(w));
+  }
+  return false;
+}
+
+/**
+ * Correct the model's severity where it can be judged objectively, so the
+ * ranking doesn't depend on how the model happened to label an issue.
+ * @param {ReturnType<typeof normalizeIssue> & {}} issue
+ * @param {ReviewUnit | undefined} unit
+ * @param {ReviewContext} ctx
+ */
+export function refineIssue(issue, unit, ctx) {
+  if (ctx.operationType === 'translation' && unit && looksUntranslated(issue, unit, ctx.targetLanguage)) {
+    return { ...issue, type: 'untranslated', category: 'critical', priority: 3 };
+  }
+  if (ALWAYS_CRITICAL.has(issue.type) && issue.category !== 'critical') {
+    return { ...issue, category: 'critical' };
+  }
+  return issue;
+}
+
 /**
  * Prompt used when a fix can't be located verbatim any more (the text changed,
  * or the model misquoted it): ask the model to rewrite just that paragraph
@@ -415,6 +502,8 @@ export default {
   partText,
   parseReviewResponse,
   normalizeIssue,
+  looksUntranslated,
+  refineIssue,
   buildRewritePrompt,
   buildChatSystemPrompt
 };

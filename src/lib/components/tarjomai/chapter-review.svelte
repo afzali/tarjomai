@@ -15,6 +15,8 @@
     partText,
     parseReviewResponse,
     normalizeIssue,
+    refineIssue,
+    ISSUE_TYPES,
     buildRewritePrompt
   } from '$lib/prompts/review.prompt.js';
   import ReviewIssueCard from './review-issue-card.svelte';
@@ -120,6 +122,7 @@
   });
 
   const catRank = Object.fromEntries(REVIEW_CATEGORIES.map((c, i) => [c.key, i]));
+  const typeRank = Object.fromEntries(Object.keys(ISSUE_TYPES).map((t, i) => [t, i]));
   /** @param {any} i */
   const para = (i) => unitById.get(i.blockId)?.n ?? i.paragraph ?? 0;
 
@@ -127,7 +130,8 @@
   function sortIssues(list) {
     return [...list].sort((a, b) => sortMode === 'position'
       ? (para(a) - para(b)) || (catRank[a.category] - catRank[b.category])
-      : (catRank[a.category] - catRank[b.category]) || (b.priority - a.priority) || (para(a) - para(b)));
+      : (catRank[a.category] - catRank[b.category]) || (b.priority - a.priority)
+        || ((typeRank[a.type] ?? 99) - (typeRank[b.type] ?? 99)) || (para(a) - para(b)));
   }
 
   const countsByCat = $derived(Object.fromEntries(
@@ -158,7 +162,16 @@
       // A run interrupted mid-way (panel closed, page reloaded) can be resumed.
       for (const p of saved.parts) if (p.status === 'running') p.status = 'pending';
       if (saved.status === 'running') saved.status = 'stopped';
+      // Re-rank open findings of runs saved before the severity rules existed.
+      let changed = false;
+      saved.issues = saved.issues.map((/** @type {any} */ i) => {
+        if (i.status !== 'open') return i;
+        const r = refineIssue(i, ctx.units.find(u => u.id === i.blockId), ctx);
+        if (r !== i) changed = true;
+        return r;
+      });
       run = saved;
+      if (changed) await persist();
     }
     loaded = true;
   });
@@ -313,7 +326,8 @@
           : (idxs.length === 1 ? idxs[0] : -1);
       }
       if (ui < 0) continue;
-      found.push({ ...it, id: uid(), partIndex: part.index, blockId: ctx.units[ui].id, paragraph: ui + 1, status: 'open' });
+      const refined = refineIssue(it, ctx.units[ui], ctx);
+      found.push({ ...refined, id: uid(), partIndex: part.index, blockId: ctx.units[ui].id, paragraph: ui + 1, status: 'open' });
     }
     run.issues.push(...found);
     await markReviewed(idxs.map((/** @type {number} */ i) => ctx.units[i].id));
